@@ -28,16 +28,14 @@ jobs:
             os: ubuntu-22.04
             args: ''
           # macOS собирается нативно под архитектуру раннера: macos-latest —
-          # Apple Silicon. Явный --target <host-arch> ломает бандлер: cargo
-          # кладёт артефакты в target/<triple>/, а бандлер ищет в
-          # target/release/. Флаг не ставим — dmg получит архитектуру в имени.
+          # Apple Silicon; dmg получит архитектуру в имени.
           - label: macOS (Apple Silicon dmg)
             os: macos-latest
             args: ''
           # Intel-dmg: раннеры macos-13 недоступны (джоба висела в очереди
           # сутками — x64 dmg не вышел ни в 1.6.3, ни в 1.6.4). Собираем
-          # кросс-компиляцией на Apple Silicon: tauri-action знает про
-          # --target и ищет бандлы в target/<triple>/release/bundle.
+          # кросс-компиляцией на Apple Silicon: tauri CLI с --target кладёт
+          # бандлы в target/<triple>/release/bundle и сам их находит.
           - label: macOS (Intel dmg)
             os: macos-latest
             args: '--target x86_64-apple-darwin'
@@ -78,9 +76,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # npm везде: bun.lock удалён, но фиксируем явно, чтобы action не
-          # угадывал пакетный менеджер
-          tauriScript: 'npm run tauri --'
+          # Без tauriScript: с 'npm run tauri --' action вставляет лишний `--`
+          # перед args, и `--target x86_64-apple-darwin` уходит мимо tauri CLI
+          # в cargo — бандлер не находит бинарник (упало в v1.6.5). Без
+          # tauriScript действие определяет npm по package-lock.json и зовёт
+          # CLI напрямую, поэтому --target доходит до бандлера.
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: 'Chronicle Engine ${{ inputs.tag || github.ref_name }}'
           releaseBody: 'Скачайте сборку для своей платформы: dmg для macOS (aarch64 — Apple Silicon, x64 — Intel), MSI/NSIS для Windows, AppImage/deb/rpm для Linux.'
