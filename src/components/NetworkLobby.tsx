@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Link2, Crown, Users, Send, ShieldCheck, ScrollText, Radio,
-  Lock, Unlock, CheckCircle2, XCircle, LogOut, Copy, AlertTriangle,
+  Lock, Unlock, CheckCircle2, XCircle, LogOut, Copy, AlertTriangle, Dices,
 } from 'lucide-react';
 import {
   linkHost, linkJoin, linkSend, linkLeave, onLinkEvent,
@@ -21,17 +21,29 @@ import {
   commitIntent, upsertCommit, upsertOutcome,
   newRoundState, upsertReveal, LinkRoundState, cheats as findCheats,
 } from '../utils/linkProtocol';
+import {
+  parseFormula, seedToRng, rollDice, diceCommit, verifyDiceReveal,
+  upsertDiceCommit, applyDiceReveal, DiceRollEntry, DiceRevealBody,
+} from '../utils/diceEngine';
+import { diffCanon, CanonState, CanonEntity } from '../utils/canonSync';
+import { generateRandomSeed } from '../utils/cryptoDice';
 import { Entity } from '../types/chronicle';
 
 const TOKEN_COLORS = ['#8b5cf6', '#3b82f6', '#22c55e', '#f97316', '#ec4899', '#14b8a6'];
+
+const DICE_PRESETS = ['d20', 'd100', '2d6+3', '4d6kh3', '2d20kl1'];
 
 interface NetworkLobbyProps {
   round: number;
   entities: Entity[];
   /** сериализованный снапшот кампании — уедет игрокам в welcome */
   campaignScroll: string;
+  /** строки журнала боя — уедут игрокам в каноне раунда */
+  mechanicalLogs: string[];
   /** применить принятый свиток к локальной кампании */
   onApplyScroll: (text: string) => void;
+  /** применить канон раунда (сущности + журнал) к локальной кампании */
+  onApplyCanon: (canon: CanonState) => void;
 }
 
 interface LogLine {
@@ -44,7 +56,9 @@ function nowStamp(): string {
   return new Date().toLocaleTimeString('ru-RU', { hour12: false });
 }
 
-const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignScroll, onApplyScroll }) => {
+const NetworkLobby: React.FC<NetworkLobbyProps> = ({
+  round, entities, campaignScroll, mechanicalLogs, onApplyScroll, onApplyCanon,
+}) => {
   const [isDesktop, setIsDesktop] = useState(false);
   const [connected, setConnected] = useState(false);
   const [role, setRole] = useState<'host' | 'client' | ''>('');
@@ -63,6 +77,11 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
   const [diceSeed, setDiceSeed] = useState('');
   const [pendingIntent, setPendingIntent] = useState<{ commit: string; intent: unknown; seed: string } | null>(null);
   const [hostAddr, setHostAddr] = useState<string | null>(null);
+  const [diceRolls, setDiceRolls] = useState<DiceRollEntry[]>([]);
+  const [diceFormula, setDiceFormula] = useState('d20');
+  const [incomingCanon, setIncomingCanon] = useState<{ from: string; canon: CanonState } | null>(null);
+  /** свои нераскрытые броски: сид и результат не видны столу до раскрытия */
+  const mySecretRolls = useRef<Map<string, { label: string; commit: string; total: number; detail: string; seed: string }>>(new Map());
   const logRef = useRef<HTMLDivElement>(null);
 
   const push = useCallback((text: string, tone: LogLine['tone'] = 'info') => {
@@ -118,7 +137,37 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     if (env.kind === 'round_result') {
       const body = env.body as { round: number; checksum: string; state: unknown };
       setRoundState(prev => (prev && prev.round === body.round ? upsertOutcome(prev, { from: env.from, checksum: body.checksum, state: body.state }) : prev));
+      // чужой канон — предложение применить к своей кампании (диф покажем в карточке)
+      if (env.from !== myName && body.state && typeof body.state === 'object') {
+        const st = body.state as { round?: number; entities?: CanonEntity[]; logs?: string[] };
+        if (Array.isArray(st.entities)) {
+          setIncomingCanon({ from: env.from, canon: { round: st.round ?? body.round, entities: st.entities, logs: st.logs } });
+        }
+      }
       push(`📜 ${env.from} прислал канон раунда ${body.round} (${body.checksum.slice(0, 10)}…)`, 'info');
+      return;
+    }
+    if (env.kind === 'dice_commit') {
+      const body = env.body as { roll_id: string; label: string; commit: string };
+      if (typeof body.roll_id !== 'string' || typeof body.label !== 'string' || typeof body.commit !== 'string') return;
+      setDiceRolls(prev => upsertDiceCommit(prev, { rollId: body.roll_id, from: env.from, label: body.label, commit: body.commit }));
+      if (env.from !== myName) push(`🎲 ${env.from} зафиксировал бросок «${body.label}» — сид под замком`, 'info');
+      return;
+    }
+    if (env.kind === 'dice_reveal') {
+      const body = env.body as DiceRevealBody;
+      if (typeof body.roll_id !== 'string' || typeof body.label !== 'string' || typeof body.commit !== 'string') return;
+      const entry: DiceRevealBody & { from: string } = { ...body, from: env.from };
+      verifyDiceReveal(body).then(ok => {
+        setDiceRolls(prev => applyDiceReveal(prev, entry, ok));
+        if (env.from === myName) return;
+        push(
+          ok
+            ? `🎲 ${env.from}: ${body.label} → ${body.total} ✓ проверен по сиду`
+            : `⚠️ ${env.from}: раскрытие «${body.label}» не сошлось с коммитом — бросок подменён!`,
+          ok ? 'ok' : 'warn'
+        );
+      });
     }
   }, [push, myName]);
 
@@ -207,7 +256,10 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     setRole('');
     setPlayers([]);
     setIncomingScroll(null);
+    setIncomingCanon(null);
     setRoundState(null);
+    setDiceRolls([]);
+    mySecretRolls.current.clear();
     setHostAddr(null);
     push('Стол покинут', 'info');
   };
@@ -219,6 +271,7 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     const rs = newRoundState(round, names);
     setRoundState(rs);
     setPendingIntent(null);
+    setIncomingCanon(null);
     const seed = `seed_${Math.random().toString(36).slice(2, 10)}`;
     setDiceSeed(seed);
     push(`Раунд ${round}: фаза коммита. Игроков: ${names.length}`, 'info');
@@ -255,14 +308,17 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
 
   const doShareCanon = async () => {
     if (!roundState) return;
+    // канон = детерминированный срез сущностей + журнал боя: клиенты смогут
+    // не только сверить чексумму, но и применить состояние к своей кампании
     const state = {
       round: roundState.round,
       entities: entities.map(e => ({ id: e.id, hp: e.hp, pos: e.pos, status: e.status })),
+      logs: mechanicalLogs,
     };
     const checksum = await linkRoundResult(roundState.round, state);
     // свой канон учитываем в машине фаз, как и каноны других столов
     setRoundState(prev => (prev && prev.round === roundState.round ? upsertOutcome(prev, { from: myName, checksum, state }) : prev));
-    push(`Канон разослан, чексумма ${checksum.slice(0, 12)}…`, 'ok');
+    push(`Канон разослан (сущности + журнал), чексумма ${checksum.slice(0, 12)}…`, 'ok');
   };
 
   const doChat = async () => {
@@ -270,6 +326,46 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     await linkSend('chat', { text: chatDraft.trim() });
     push(`${myName}: ${chatDraft.trim()}`, 'chat');
     setChatDraft('');
+  };
+
+  // ------------------------------------------------------------- честные кости
+
+  const doDiceRoll = async () => {
+    if (!connected) return;
+    const f = parseFormula(diceFormula);
+    if (!f) {
+      push(`«${diceFormula}» — не формула. Примеры: d20, 2d6+3, 4d6kh3, 2d20kl1`, 'warn');
+      return;
+    }
+    const seed = generateRandomSeed('dice');
+    const res = rollDice(f, seedToRng(seed));
+    const commit = await diceCommit(f.label, seed);
+    const rollId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    mySecretRolls.current.set(rollId, { label: f.label, commit, total: res.total, detail: res.detail, seed });
+    await linkSend('dice_commit', { roll_id: rollId, label: f.label, commit });
+    setDiceRolls(prev => upsertDiceCommit(prev, { rollId, from: myName, label: f.label, commit }));
+    push(`🎲 Коммит «${f.label}» опубликован — сид под замком до раскрытия`, 'ok');
+  };
+
+  const doRevealMyRolls = async () => {
+    const mine = diceRolls.filter(r => r.from === myName && r.phase === 'committed');
+    if (mine.length === 0) {
+      push('Нечего раскрывать — сначала зафиксируй бросок', 'info');
+      return;
+    }
+    for (const r of mine) {
+      const secret = mySecretRolls.current.get(r.rollId);
+      if (!secret) continue;
+      const body: DiceRevealBody = {
+        roll_id: r.rollId, label: secret.label, commit: secret.commit,
+        total: secret.total, detail: secret.detail, seed: secret.seed,
+      };
+      await linkSend('dice_reveal', body);
+      const ok = await verifyDiceReveal(body);
+      setDiceRolls(prev => applyDiceReveal(prev, { ...body, from: myName }, ok));
+      mySecretRolls.current.delete(r.rollId);
+    }
+    push(`🎲 Раскрыто бросков: ${mine.length} — любой стол пересчитает и проверит`, 'ok');
   };
 
   const copyInvite = async () => {
@@ -481,12 +577,94 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
                   </div>
                 )}
               </div>
+
+              {/* Честные кости: коммит сида до броска, раскрытие с проверкой */}
+              <div className="border border-[#27272a] rounded-xl bg-[#121212] p-5 space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="flex items-center gap-2 text-[#d4af37] font-semibold">
+                    <Dices className="w-4 h-4" /> Честные кости (commit-reveal)
+                  </h3>
+                  <div className="flex flex-wrap gap-1.5">
+                    {DICE_PRESETS.map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setDiceFormula(p)}
+                        className={`text-xs px-2 py-0.5 rounded-full transition ${diceFormula === p ? 'bg-[#d4af37]/20 text-[#d4af37]' : 'bg-[#27272a] text-[#71717a] hover:text-[#a1a1aa]'}`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 items-center">
+                  <input
+                    className={`${inputCls} font-mono text-xs w-36`}
+                    value={diceFormula}
+                    onChange={e => setDiceFormula(e.target.value)}
+                    placeholder="2d6+3"
+                    title="Формула: NdM, NdM+K, NdMkhN (оставить старшие), NdMklN (младшие)"
+                  />
+                  <button onClick={doDiceRoll} className={goldBtn}><Lock className="w-4 h-4" /> Зафиксировать бросок</button>
+                  {diceRolls.some(r => r.from === myName && r.phase === 'committed') && (
+                    <button onClick={doRevealMyRolls} className={goldBtn}>
+                      <Unlock className="w-4 h-4" /> Раскрыть ({diceRolls.filter(r => r.from === myName && r.phase === 'committed').length})
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  {diceRolls.length === 0 && (
+                    <p className="text-xs text-[#52525b]">
+                      Бросков ещё не было. Коммит sha256(формула|сид) уезжает до броска,
+                      сид раскрывается позже — перекинуть результат невозможно.
+                    </p>
+                  )}
+                  {diceRolls.map(r => (
+                    <p
+                      key={r.rollId}
+                      className={`font-mono text-xs truncate ${r.phase === 'revealed' && !r.valid ? 'text-red-400' : 'text-[#d4d4d8]'}`}
+                      title={r.detail ?? `коммит ${r.commit}`}
+                    >
+                      {r.phase === 'committed' ? '🔒' : r.valid ? '🎲 ✅' : '🎲 ⚠️'} {r.from}: {r.label}
+                      {r.phase === 'revealed' ? ` → ${r.total}${r.valid ? ' ✓ проверен' : ' ✗ ПОДМЕНА'}` : ' — ждёт раскрытия'}
+                    </p>
+                  ))}
+                </div>
+              </div>
             </>
           )}
         </div>
 
-        {/* Правая колонка: свиток + журнал */}
+        {/* Правая колонка: канон + свиток + журнал */}
         <div className="space-y-6">
+          {incomingCanon && (
+            <div className="border border-[#d4af37]/40 rounded-xl bg-[#121212] p-5 space-y-3">
+              <h3 className="flex items-center gap-2 text-[#d4af37] font-semibold">
+                <ScrollText className="w-4 h-4" /> Канон раунда {incomingCanon.canon.round} от {incomingCanon.from}
+              </h3>
+              <CanonCardBody canon={incomingCanon.canon} entities={entities} />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => {
+                    onApplyCanon(incomingCanon.canon);
+                    push(`Канон раунда ${incomingCanon.canon.round} применён к кампании`, 'ok');
+                    setIncomingCanon(null);
+                  }}
+                  className={goldBtn}
+                >
+                  <CheckCircle2 className="w-4 h-4" /> Применить канон
+                </button>
+                <button
+                  onClick={() => { setIncomingCanon(null); push('Канон отклонён — стол остаётся на своей версии', 'info'); }}
+                  className={ghostBtn}
+                >
+                  Отклонить
+                </button>
+              </div>
+            </div>
+          )}
+
           {incomingScroll && (
             <div className="border border-[#d4af37]/40 rounded-xl bg-[#121212] p-5 space-y-3">
               <h3 className="flex items-center gap-2 text-[#d4af37] font-semibold"><ScrollText className="w-4 h-4" /> Свиток кампании</h3>
@@ -532,12 +710,24 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
   );
 };
 
+/** Превью канона: что изменится у этого стола, если применить. */
+const CanonCardBody: React.FC<{ canon: CanonState; entities: Entity[] }> = ({ canon, entities }) => {
+  const d = diffCanon(entities, canon.entities);
+  return (
+    <p className="text-sm text-[#a1a1aa]">
+      Совпадает сущностей: <span className="text-[#f4f4f5]">{d.matched}</span> · изменения: hp — {d.hp.length},
+      позиции — {d.pos.length}, статусы — {d.status.length}
+      {d.unknown.length > 0 ? <> · <span className="text-amber-400">незнакомых id: {d.unknown.length} (будут пропущены)</span></> : null}
+      {canon.logs ? ` · журнал боя: ${canon.logs.length} строк` : ''}.
+    </p>
+  );
+};
+
 const SectionTitle: React.FC = () => (
   <div>
     <h2 className="text-2xl font-bold text-[#f4f4f5] flex items-center gap-3">
       <Link2 className="w-6 h-6 text-[#d4af37]" /> Chronicle Link — сетевой стол
-    </h2>
-    <p className="text-[#a1a1aa] mt-1">
+    </h2>    <p className="text-[#a1a1aa] mt-1">
       P2P по TCP: один игрок открывает стол, остальные подключаются. Кампания переезжает одним свитком,
       раунды резолвятся commit-reveal — перекинуть дайс невозможно, а канон боя сверяется чексуммой на всех столах.
     </p>

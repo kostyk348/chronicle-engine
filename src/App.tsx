@@ -33,6 +33,7 @@ import { CryptoDiceModal } from './components/CryptoDiceModal';
 import NetworkLobby from './components/NetworkLobby';
 import { parseEmlString, buildMasterResolutionEml } from './utils/mimeEml';
 import { resolveWegoRound } from './utils/wegoResolver';
+import { applyCanon } from './utils/canonSync';
 import { playSfx } from './utils/audioSynthesizer';
 import { loadCampaignFromDisk, saveCampaignToDisk, saveViaDialog, openTextViaDialog } from './utils/desktopIO';
 
@@ -633,12 +634,20 @@ export default function App() {
             round={currentRound}
             entities={entities}
             campaignScroll={JSON.stringify(buildCampaignSnapshot())}
+            mechanicalLogs={mechanicalLogs}
             onApplyScroll={(text) => {
               try {
                 if (!applyCampaignSnapshot(JSON.parse(text))) playSfx('shield_block');
               } catch (e) {
                 console.warn('Scroll apply failed:', e);
               }
+            }}
+            onApplyCanon={(canon) => {
+              // канон раунда: hp/позиции/статусы сущностей + журнал боя.
+              // Локальные сущности, которых нет в каноне, остаются как были.
+              setEntities(prev => applyCanon(prev, canon.entities).entities);
+              if (Array.isArray(canon.logs) && canon.logs.length > 0) setMechanicalLogs(canon.logs);
+              playSfx('shield_block');
             }}
           />
         )}

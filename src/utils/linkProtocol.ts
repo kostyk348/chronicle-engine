@@ -87,6 +87,8 @@ export const LINK_KINDS = [
   'intent_commit',
   'intent_reveal',
   'round_result',
+  'dice_commit',
+  'dice_reveal',
   'chat',
   'ping',
   'bye',
