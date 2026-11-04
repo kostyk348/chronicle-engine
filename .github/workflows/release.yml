@@ -28,15 +28,19 @@ jobs:
             os: ubuntu-22.04
             args: ''
           # macOS собирается нативно под архитектуру раннера: macos-latest —
-          # Apple Silicon, macos-13 — Intel. Явный --target <host-arch> ломает
-          # бандлер: cargo кладёт артефакты в target/<triple>/, а бандлер ищет
-          # в target/release/. Флаг не ставим — dmg получит архитектуру в имени.
+          # Apple Silicon. Явный --target <host-arch> ломает бандлер: cargo
+          # кладёт артефакты в target/<triple>/, а бандлер ищет в
+          # target/release/. Флаг не ставим — dmg получит архитектуру в имени.
           - label: macOS (Apple Silicon dmg)
             os: macos-latest
             args: ''
+          # Intel-dmg: раннеры macos-13 недоступны (джоба висела в очереди
+          # сутками — x64 dmg не вышел ни в 1.6.3, ни в 1.6.4). Собираем
+          # кросс-компиляцией на Apple Silicon: tauri-action знает про
+          # --target и ищет бандлы в target/<triple>/release/bundle.
           - label: macOS (Intel dmg)
-            os: macos-13
-            args: ''
+            os: macos-latest
+            args: '--target x86_64-apple-darwin'
           - label: Windows (MSI/NSIS)
             os: windows-latest
             args: ''
@@ -53,6 +57,8 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ contains(matrix.args, 'x86_64-apple-darwin') && 'x86_64-apple-darwin' || '' }}
 
       - uses: Swatinem/rust-cache@v2
         with:
