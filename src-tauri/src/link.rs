@@ -217,14 +217,6 @@ impl HostHandle {
         Ok(())
     }
 
-    pub fn send_to(&self, peer: &str, kind: &str, body: serde_json::Value) -> Result<(), String> {
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let frame = Envelope::new(kind, "host", seq, body).to_frame()?;
-        let shared = self.shared.lock().map_err(|_| "poisoned")?;
-        let out = shared.peers.get(peer).ok_or(format!("no peer {peer}"))?;
-        out.send(frame).map_err(|_| "peer gone".into())
-    }
-
     pub fn leave(&self) {
         self.closed.store(true, Ordering::SeqCst);
         if let Ok(mut s) = self.shared.lock() {

@@ -4,7 +4,7 @@ mod link;
 
 use std::fs;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 // ------------------------------------------------------------ Chronicle Link
@@ -15,21 +15,14 @@ enum LinkSession {
     Client(link::ClientHandle),
 }
 
+#[derive(Default)]
 struct LinkState {
     session: Option<LinkSession>,
     table: String,
     role: String,
 }
 
-impl Default for LinkState {
-    fn default() -> Self {
-        LinkState {
-            session: None,
-            table: String::new(),
-            role: String::new(),
-        }
-    }
-}
+
 
 /// Пересылка сетевых событий в окно: LinkEvent → JSON → emit("link-event").
 fn forward_events(app: AppHandle, rx: std::sync::mpsc::Receiver<link::LinkEvent>) {
@@ -105,7 +98,7 @@ fn link_join(
 fn link_send(state: State<Mutex<LinkState>>, kind: String, body_json: String) -> Result<(), String> {
     let body: serde_json::Value =
         serde_json::from_str(&body_json).map_err(|e| format!("bad body json: {e}"))?;
-    let mut st = state.lock().map_err(|_| "poisoned")?;
+    let st = state.lock().map_err(|_| "poisoned")?;
     match &st.session {
         Some(LinkSession::Host(h)) => h.broadcast(&kind, body),
         Some(LinkSession::Client(c)) => c.send(&kind, body),
@@ -124,6 +117,70 @@ fn link_leave(state: State<Mutex<LinkState>>) -> Result<(), String> {
     st.table.clear();
     st.role.clear();
     Ok(())
+}
+
+/// Публикация коммита интента: считает SHA-256 канонического JSON + сид,
+/// рассылает intent_commit и возвращает хеш (его игрок раскроет позже).
+#[tauri::command]
+fn link_intent_commit(
+    state: State<Mutex<LinkState>>,
+    round: u64,
+    intent_json: String,
+    dice_seed: String,
+) -> Result<String, String> {
+    let intent: serde_json::Value =
+        serde_json::from_str(&intent_json).map_err(|e| format!("bad intent json: {e}"))?;
+    let commit = link::intent_commit(&intent, &dice_seed)?;
+    let body = link::IntentCommit { round, commit: commit.clone() };
+    let st = state.lock().map_err(|_| "poisoned")?;
+    match &st.session {
+        Some(LinkSession::Host(h)) => h.broadcast("intent_commit", serde_json::to_value(&body).map_err(|e| e.to_string())?)?,
+        Some(LinkSession::Client(c)) => c.send("intent_commit", serde_json::to_value(&body).map_err(|e| e.to_string())?)?,
+        None => return Err("Нет активной сессии".into()),
+    }
+    Ok(commit)
+}
+
+/// Раскрытие: пересчитывает коммит из (интент, сид), рассылает intent_reveal.
+/// Получатели обязаны сверить: link::intent_commit(intent, seed) == commit.
+#[tauri::command]
+fn link_intent_reveal(
+    state: State<Mutex<LinkState>>,
+    round: u64,
+    intent_json: String,
+    dice_seed: String,
+) -> Result<String, String> {
+    let intent: serde_json::Value =
+        serde_json::from_str(&intent_json).map_err(|e| format!("bad intent json: {e}"))?;
+    let commit = link::intent_commit(&intent, &dice_seed)?;
+    let body = link::IntentReveal { round, commit: commit.clone(), intent, dice_seed };
+    let st = state.lock().map_err(|_| "poisoned")?;
+    match &st.session {
+        Some(LinkSession::Host(h)) => h.broadcast("intent_reveal", serde_json::to_value(&body).map_err(|e| e.to_string())?)?,
+        Some(LinkSession::Client(c)) => c.send("intent_reveal", serde_json::to_value(&body).map_err(|e| e.to_string())?)?,
+        None => return Err("Нет активной сессии".into()),
+    }
+    Ok(commit)
+}
+
+/// Канон раунда: считает чексумму канонического JSON состояния и рассылает round_result.
+#[tauri::command]
+fn link_round_result(
+    state: State<Mutex<LinkState>>,
+    round: u64,
+    state_json: String,
+) -> Result<String, String> {
+    let canonical: serde_json::Value =
+        serde_json::from_str(&state_json).map_err(|e| format!("bad state json: {e}"))?;
+    let checksum = link::round_checksum(&canonical)?;
+    let body = link::RoundResult { round, checksum: checksum.clone(), state: canonical };
+    let st = state.lock().map_err(|_| "poisoned")?;
+    match &st.session {
+        Some(LinkSession::Host(h)) => h.broadcast("round_result", serde_json::to_value(&body).map_err(|e| e.to_string())?)?,
+        Some(LinkSession::Client(c)) => c.send("round_result", serde_json::to_value(&body).map_err(|e| e.to_string())?)?,
+        None => return Err("Нет активной сессии".into()),
+    }
+    Ok(checksum)
 }
 
 #[derive(serde::Serialize)]
@@ -227,6 +284,9 @@ pub fn run() {
             link_host,
             link_join,
             link_send,
+            link_intent_commit,
+            link_intent_reveal,
+            link_round_result,
             link_leave,
             link_status,
         ])

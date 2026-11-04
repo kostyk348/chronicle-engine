@@ -13,10 +13,12 @@ import {
   Lock, Unlock, CheckCircle2, XCircle, LogOut, Copy, AlertTriangle,
 } from 'lucide-react';
 import {
-  linkHost, linkJoin, linkSend, linkLeave, onLinkEvent, LinkPlayerInfo, LinkUiEvent,
+  linkHost, linkJoin, linkSend, linkLeave, onLinkEvent,
+  linkIntentCommit, linkIntentReveal, linkRoundResult,
+  LinkPlayerInfo, LinkUiEvent,
 } from '../utils/linkClient';
 import {
-  commitIntent, roundChecksum, upsertCommit, upsertOutcome,
+  commitIntent, upsertCommit, upsertOutcome,
   newRoundState, upsertReveal, LinkRoundState, cheats as findCheats,
 } from '../utils/linkProtocol';
 import { Entity } from '../types/chronicle';
@@ -211,9 +213,10 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     if (!roundState) return;
     try {
       const intent = JSON.parse(intentDraft);
-      const commit = await commitIntent(intent, diceSeed || 'default-seed');
-      setPendingIntent({ commit, intent, seed: diceSeed || 'default-seed' });
-      await linkSend('intent_commit', { round: roundState.round, commit });
+      const seed = diceSeed || 'default-seed';
+      // Rust считает SHA-256 канона и рассылает intent_commit — хеш возвращается нам
+      const commit = await linkIntentCommit(roundState.round, intent, seed);
+      setPendingIntent({ commit, intent, seed });
       push(`Коммит опубликован: ${commit.slice(0, 12)}…`, 'ok');
     } catch (e) {
       push(`Интент не является JSON: ${e}`, 'warn');
@@ -222,12 +225,7 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
 
   const doReveal = async () => {
     if (!roundState || !pendingIntent) return;
-    await linkSend('intent_reveal', {
-      round: roundState.round,
-      commit: pendingIntent.commit,
-      intent: pendingIntent.intent,
-      dice_seed: pendingIntent.seed,
-    });
+    await linkIntentReveal(roundState.round, pendingIntent.intent, pendingIntent.seed);
     push('Интент раскрыт — все столы могут проверить честность', 'ok');
   };
 
@@ -237,8 +235,7 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
       round: roundState.round,
       entities: entities.map(e => ({ id: e.id, hp: e.hp, pos: e.pos, status: e.status })),
     };
-    const checksum = await roundChecksum(state);
-    await linkSend('round_result', { round: roundState.round, checksum, state });
+    const checksum = await linkRoundResult(roundState.round, state);
     push(`Канон разослан, чексумма ${checksum.slice(0, 12)}…`, 'ok');
   };
 

@@ -87,6 +87,24 @@ export async function linkSend(kind: string, body: unknown): Promise<void> {
   await invoke('link_send', { kind, bodyJson: JSON.stringify(body) });
 }
 
+/** Публикация коммита: Rust считает SHA-256 канона и рассылает intent_commit. */
+export async function linkIntentCommit(round: number, intent: unknown, diceSeed: string): Promise<string> {
+  const { invoke } = await tauri();
+  return invoke<string>('link_intent_commit', { round, intentJson: JSON.stringify(intent), diceSeed });
+}
+
+/** Раскрытие: Rust пересчитывает коммит и рассылает intent_reveal. */
+export async function linkIntentReveal(round: number, intent: unknown, diceSeed: string): Promise<string> {
+  const { invoke } = await tauri();
+  return invoke<string>('link_intent_reveal', { round, intentJson: JSON.stringify(intent), diceSeed });
+}
+
+/** Канон раунда: Rust считает чексумму и рассылает round_result. */
+export async function linkRoundResult(round: number, state: unknown): Promise<string> {
+  const { invoke } = await tauri();
+  return invoke<string>('link_round_result', { round, stateJson: JSON.stringify(state) });
+}
+
 export async function linkLeave(): Promise<void> {
   if (!isDesktop()) return;
   const { invoke } = await tauri();
