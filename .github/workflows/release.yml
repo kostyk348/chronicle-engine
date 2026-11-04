@@ -67,6 +67,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # npm везде: bun.lock удалён, но фиксируем явно, чтобы action не
+          # угадывал пакетный менеджер
+          tauriScript: 'npm run tauri --'
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: 'Chronicle Engine ${{ inputs.tag || github.ref_name }}'
           releaseBody: 'Скачайте сборку для своей платформы: dmg (macOS, universal — Intel и Apple Silicon), MSI/NSIS (Windows), AppImage/deb/rpm (Linux).'
