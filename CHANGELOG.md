@@ -3,6 +3,13 @@
 Все заметные изменения проекта документируются в этом файле.
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/).
 
+## [1.6.3] — Hotfix 3: битый EGL на Linux (настоящая причина серого экрана)
+
+Пользовательский лог дал точный диагноз, которого не хватало всем предыдущим флагам: `Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...` — WebProcess WebKit умирает при инициализации EGL и окно остаётся серым, что бы мы ни делали с композитингом.
+
+### Fixed
+- На Linux по умолчанию включается `LIBGL_ALWAYS_SOFTWARE=1` — софтверный Mesa-EGL (llvmpipe) поднимается на любой системе, аппаратного ускорения этому интерфейсу не нужно. Отключить (если хочется проверить GPU-путь): `CHRONICLE_FORCE_GPU=1 ./Chronicle.Engine_1.6.3_amd64.AppImage`.
+
 ## [1.6.2] — Hotfix 2: полный набор обходных флагов WebKit
 
 ### Fixed

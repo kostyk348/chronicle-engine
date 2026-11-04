@@ -1,6 +1,6 @@
 [package]
 name = "chronicle-engine"
-version = "1.6.2"
+version = "1.6.3"
 description = "Chronicle Engine — TTRPG platform (native desktop)"
 authors = ["Chronicle Contributors"]
 license = "MIT"
