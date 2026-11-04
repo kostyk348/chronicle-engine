@@ -31,7 +31,7 @@ export const INITIAL_ENTITIES: Entity[] = [
     avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
     color: '#8b5cf6',
     spells: ['Scorching Ray', 'Shield', 'Mage Armor', 'Magic Missile'],
-    weapons: [{ name: 'Quarterstaff', damage: '1d6 bludgeoning', range: 1 }],
+    weapons: [{ name: 'Quarterstaff', damage: '1d6 bludgeoning', damageDice: '1d6', attackBonus: 2, range: 1 }],
   },
   {
     id: 'char_warrior',
@@ -50,7 +50,7 @@ export const INITIAL_ENTITIES: Entity[] = [
     avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
     color: '#3b82f6',
     spells: [],
-    weapons: [{ name: 'Greatsword', damage: '2d6+3 slashing', range: 1 }],
+    weapons: [{ name: 'Greatsword', damage: '2d6+3 slashing', damageDice: '2d6+3', attackBonus: 5, range: 1 }],
   },
   {
     id: 'mob_shaman',
@@ -66,7 +66,7 @@ export const INITIAL_ENTITIES: Entity[] = [
     avatarUrl: 'https://images.unsplash.com/photo-1563089145-599997674d42?w=150&auto=format&fit=crop&q=80',
     color: '#ef4444',
     spells: ['Blight Chant', 'Hex Flame'],
-    weapons: [{ name: 'Bone Staff', damage: '1d6 necrotic', range: 1 }],
+    weapons: [{ name: 'Bone Staff', damage: '1d6 necrotic', damageDice: '1d6', attackBonus: 2, range: 1 }],
   },
   {
     id: 'mob_archer_1',
@@ -81,7 +81,7 @@ export const INITIAL_ENTITIES: Entity[] = [
     status: 'Alive',
     avatarUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
     color: '#f97316',
-    weapons: [{ name: 'Shortbow', damage: '1d6+2 piercing', range: 16 }],
+    weapons: [{ name: 'Shortbow', damage: '1d6+2 piercing', damageDice: '1d6+2', attackBonus: 4, range: 16 }],
   },
 ];
 
