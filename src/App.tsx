@@ -34,6 +34,7 @@ import NetworkLobby from './components/NetworkLobby';
 import { parseEmlString, buildMasterResolutionEml } from './utils/mimeEml';
 import { resolveWegoRound } from './utils/wegoResolver';
 import { applyCanon } from './utils/canonSync';
+import { RoundReplayData } from './utils/roundReplay';
 import { playSfx } from './utils/audioSynthesizer';
 import { loadCampaignFromDisk, saveCampaignToDisk, saveViaDialog, openTextViaDialog } from './utils/desktopIO';
 
@@ -66,6 +67,8 @@ export default function App() {
   const [partyMembers, setPartyMembers] = useState<CharacterSheet[]>(DEFAULT_PARTY_MEMBERS);
   const [audioTracks, setAudioTracks] = useState<AudioTrackSegment[]>(INITIAL_AUDIO_TRACKS);
   const [isDiceModalOpen, setIsDiceModalOpen] = useState<boolean>(false);
+  // Кинематографичный реплей последнего разрешённого раунда (транзиентно, не сохраняется)
+  const [lastRoundReplay, setLastRoundReplay] = useState<RoundReplayData | null>(null);
 
   // WEGO Resolver Live State
   const [combatStatus, setCombatStatus] = useState<'Ongoing' | 'Ended_Victory' | 'Ended_Defeat' | 'Fled'>('Ongoing');
@@ -302,6 +305,7 @@ export default function App() {
       },
     ];
 
+    const preEntities = entities; // снапшот стола до раунда — с него играет реплей
     const resolution = await resolveWegoRound(
       entities,
       currentRound,
@@ -314,6 +318,22 @@ export default function App() {
     setMechanicalLogs(resolution.mechanicalLog);
     setSuggestedProse(resolution.suggestedProse);
     playSfx('fire_spell');
+
+    // Кинематографичный реплей раунда (токены, дуги, всплывающий урон)
+    setLastRoundReplay({
+      round: currentRound,
+      events: resolution.events,
+      startEntities: preEntities,
+      log: resolution.mechanicalLog,
+      combatStatus: resolution.combatStatus,
+      xpGained: resolution.xpGained,
+    });
+
+    // Опыт за павших врагов — поровну всем героям партии
+    if (resolution.xpGained > 0 && partyMembers.length > 0) {
+      const share = Math.floor(resolution.xpGained / partyMembers.length);
+      setPartyMembers(prev => prev.map(m => ({ ...m, xp: m.xp + share })));
+    }
 
     // Update chapter log
     setChapters(prev =>
@@ -560,6 +580,8 @@ export default function App() {
             round={currentRound}
             entities={entities}
             combatStatus={combatStatus}
+            lastRound={lastRoundReplay}
+            onReplayDismiss={() => setLastRoundReplay(null)}
             onTransmitIntent={handleTransmitIntent}
             onOpenDiceModal={() => setIsDiceModalOpen(true)}
             onSimulateWegoRound={handleSimulateWegoRound}

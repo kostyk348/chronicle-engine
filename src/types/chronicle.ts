@@ -28,6 +28,8 @@ export interface Entity {
   weapons?: WeaponSpec[];
   // explicit override of the to-hit bonus; otherwise derived from level/class
   attackBonusOverride?: number;
+  // XP awarded for slaying this creature; if absent the resolver estimates from maxHp/AC
+  xpValue?: number;
 }
 
 export interface WeaponSpec {

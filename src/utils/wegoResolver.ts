@@ -55,10 +55,64 @@ export interface ResolutionOptions {
   terrain?: TerrainSpec;
 }
 
+/**
+ * Структурное событие раунда — сырьё для кинематографичного реплея.
+ * В отличие от строк механического лога, событие машиночитаемо:
+ * реплей знает, кто куда сдвинулся, кто в кого стрелял и сколько урона упал.
+ */
+export type RoundEvent =
+  | {
+      kind: 'move';
+      actorId: string;
+      actorName: string;
+      from: [number, number];
+      to: [number, number];
+      path: [number, number][];
+      dash: boolean;
+    }
+  | {
+      kind: 'attack';
+      actorId: string;
+      actorName: string;
+      targetId: string;
+      targetName: string;
+      label: string;
+      /** для autoHit (Magic Missile) броска нет — d20/bonus/total равны 0 */
+      d20: number;
+      bonus: number;
+      total: number;
+      ac: number;
+      hit: boolean;
+      crit: boolean;
+      autoHit?: boolean;
+      edge: 'none' | 'advantage' | 'disadvantage';
+      color: string;
+    }
+  | {
+      kind: 'damage';
+      targetId: string;
+      targetName: string;
+      attackerName?: string;
+      amount: number;
+      dtype: string;
+      hpAfter: number;
+      maxHp: number;
+      statusAfter: Entity['status'];
+      color: string;
+    }
+  | { kind: 'heal'; actorId: string; actorName: string; amount: number; hpAfter: number; maxHp: number }
+  | { kind: 'note'; icon: string; text: string; actorId?: string; actorName?: string }
+  | { kind: 'xp'; amount: number }
+  | { kind: 'outcome'; status: ResolutionResult['combatStatus'] };
+
 export interface ResolutionResult {
   nextEntities: Entity[];
   combatStatus: 'Ongoing' | 'Ended_Victory' | 'Ended_Defeat' | 'Fled';
   mechanicalLog: string[];
+  /** машиночитаемые события раунда — для реплея и внешних потребителей */
+  events: RoundEvent[];
+  /** XP за павших врагов этого раунда (оценка maxHp*2+AC*5, если xpValue не задан) */
+  xpGained: number;
   generatedSvg: string;
   suggestedProse: string;
   statePayload: MasterStatePayload;
@@ -199,6 +253,7 @@ export async function resolveWegoRound(
   const terrain = options.terrain ?? CRYPT_TERRAIN;
   const nextEntities: Entity[] = JSON.parse(JSON.stringify(currentEntities));
   const log: string[] = [];
+  const events: RoundEvent[] = [];
   const svgTrails: string[] = [];
   const svgEffects: string[] = [];
 
@@ -206,6 +261,8 @@ export async function resolveWegoRound(
   const getEntity = (id?: string) =>
     nextEntities.find(e => e.id === id || e.actorId === id);
   const alive = (e?: Entity) => !!e && e.status !== 'Dead' && e.status !== 'Unconscious';
+  const pushNote = (icon: string, text: string, actor?: Entity) =>
+    events.push({ kind: 'note', icon, text, actorId: actor?.id, actorName: actor?.name });
 
   // --- фаза 0: интенты живых актёров, в стабильном порядке ------------------
   const intents = playerIntents.filter(i => alive(getEntity(i.actor_id)));
@@ -248,6 +305,10 @@ export async function resolveWegoRound(
     }
     if (endPos[0] !== startPos[0] || endPos[1] !== startPos[1]) {
       actor.pos = endPos;
+      events.push({
+        kind: 'move', actorId: actor.id, actorName: actor.name,
+        from: startPos, to: endPos, path: trail, dash: !!intent.movement.dash,
+      });
       const pathStr = trail
         .map(([x, y]) => `${x * 40 + 20},${y * 40 + 20}`)
         .join(' ');
@@ -262,8 +323,9 @@ export async function resolveWegoRound(
     target: Entity,
     bonus: number,
     seed: string,
+    label: string,
     forcedEdge?: 'advantage' | 'disadvantage'
-  ): Promise<{ d20: number; total: number; hit: boolean; crit: boolean; edge: 'none' | 'advantage' | 'disadvantage' }> {
+  ): Promise<{ d20: number; total: number; hit: boolean; crit: boolean; edge: 'none' | 'advantage' | 'disadvantage'; ac: number }> {
     let edge: 'none' | 'advantage' | 'disadvantage' = forcedEdge ?? 'none';
     if (dodging.has(target.id) || dodging.has(target.actorId ?? '')) {
       edge = edge === 'advantage' ? 'none' : 'disadvantage';
@@ -283,11 +345,17 @@ export async function resolveWegoRound(
     if (shieldIntent) {
       effectiveAc += 5;
       log.push(`🛡️ [Реакция] ${target.name} бросает Щит! (+5 AC, эффективно ${effectiveAc})`);
+      pushNote('🛡️', `Щит! +5 AC (эффективно ${effectiveAc})`, target);
     }
 
     const crit = d20 === 20;
     const hit = crit || (d20 !== 1 && total >= effectiveAc);
-    return { d20, total, hit, crit, edge };
+    events.push({
+      kind: 'attack', actorId: attacker.id, actorName: attacker.name,
+      targetId: target.id, targetName: target.name, label,
+      d20, bonus, total, ac: effectiveAc, hit, crit, edge, color: attacker.color,
+    });
+    return { d20, total, hit, crit, edge, ac: effectiveAc };
   }
 
   async function applyDamage(
@@ -307,6 +375,11 @@ export async function resolveWegoRound(
         log.push(`   💀 ${target.name} падает замертво!`);
       }
     }
+    events.push({
+      kind: 'damage', targetId: target.id, targetName: target.name, attackerName,
+      amount: damage, dtype, hpAfter: target.hp, maxHp: target.maxHp,
+      statusAfter: target.status, color: target.color,
+    });
     const fx = `#${target.color}`;
     svgEffects.push(
       `<circle cx="${target.pos[0] * 40 + 20}" cy="${target.pos[1] * 40 + 20}" r="8" fill="${fx}" opacity="0.8" />`
@@ -331,7 +404,7 @@ export async function resolveWegoRound(
     const dist = (weapon.range ?? 1) > 1 ? 'дальним боем' : 'в ближнем бою';
 
     await attackLine(attacker, target, '#eab308', true);
-    const r = await attackRollAgainst(attacker, target, bonus, seed);
+    const r = await attackRollAgainst(attacker, target, bonus, seed, weapon.name);
     const edgeNote = r.edge !== 'none' ? (r.edge === 'advantage' ? ' (преимущество)' : ' (помеха)') : '';
 
     if (r.hit) {
@@ -358,6 +431,7 @@ export async function resolveWegoRound(
     // Реакция-щит как основное действие смысла не имеет — но разрешаем кастер-щит
     if (found?.spec.acBonus && !found.spec.damage) {
       log.push(`🛡️ ${caster.name} поддерживает Щит — +5 AC до следующего хода.`);
+      pushNote('🛡️', 'поддерживает Щит — +5 AC до следующего хода', caster);
       return;
     }
     if (!found) {
@@ -365,6 +439,13 @@ export async function resolveWegoRound(
       const t = alive(getEntity(action.target_id)) ? getEntity(action.target_id)! : nextEntities.find(e => e.role === 'enemy' && alive(e));
       if (t) {
         log.push(`✨ ${caster.name} произносит «${action.spell_name}» — поток силы срывается в ${t.name}:`);
+        pushNote('✨', `произносит «${action.spell_name}» → ${t.name}`, caster);
+        events.push({
+          kind: 'attack', actorId: caster.id, actorName: caster.name,
+          targetId: t.id, targetName: t.name, label: action.spell_name ?? 'магия',
+          d20: 0, bonus: 0, total: 0, ac: t.ac, hit: true, crit: false, autoHit: true,
+          edge: 'none', color: caster.color,
+        });
         await applyDamage(t, dmg, 'магии', caster.name);
       }
       return;
@@ -385,6 +466,7 @@ export async function resolveWegoRound(
       }
       if (shots.length > 0) {
         log.push(`⚡ ${caster.name} читает «${action.spell_name}» (ячейка ${slot} ур., целей: ${shots.length}):`);
+        pushNote('⚡', `читает «${action.spell_name}» (ячейка ${slot} ур., целей: ${shots.length})`, caster);
       }
       for (let i = 0; i < shots.length; i++) {
         const shot = shots[i];
@@ -401,10 +483,11 @@ export async function resolveWegoRound(
         if (!target) continue;
 
         const seed = shot.dice_seed || `${caster.id}_shot_${i}`;
+        const shotLabel = `${action.spell_name ?? found.key} #${i + 1}`;
         if (spec.attackRoll) {
           const bonus = attackBonusOf(caster, undefined, true);
           await attackLine(caster, target, '#ef4444');
-          const r = await attackRollAgainst(caster, target, bonus, seed);
+          const r = await attackRollAgainst(caster, target, bonus, seed, shotLabel);
           const edgeNote = r.edge !== 'none' ? (r.edge === 'advantage' ? ' (преимущество)' : ' (помеха)') : '';
           if (r.hit) {
             const dmgExpr: DiceExpr = r.crit ? { ...parseDiceExpr(spec.damage)!, n: parseDiceExpr(spec.damage)!.n * 2 } : parseDiceExpr(spec.damage)!;
@@ -419,6 +502,12 @@ export async function resolveWegoRound(
           const dmg = await rollDice(parseDiceExpr(spec.damage)!, seed, `${masterSeed}:spell:r${round}:s${i}`);
           await attackLine(caster, target, '#a78bfa', true);
           log.push(`  • Снаряд #${i + 1} → ${target.name}: автопопадание, ${dmg} ${spec.dtype}:`);
+          events.push({
+            kind: 'attack', actorId: caster.id, actorName: caster.name,
+            targetId: target.id, targetName: target.name, label: shotLabel,
+            d20: 0, bonus: 0, total: 0, ac: target.ac, hit: true, crit: false, autoHit: true,
+            edge: 'none', color: caster.color,
+          });
           await applyDamage(target, dmg, spec.dtype, caster.name);
         }
       }
@@ -430,6 +519,7 @@ export async function resolveWegoRound(
     const before = actor.hp;
     actor.hp = Math.min(actor.maxHp, actor.hp + heal);
     log.push(`🧪 ${actor.name} пьёт зелье лечения: +${actor.hp - before} HP (было ${before}, стало ${actor.hp}/${actor.maxHp})`);
+    events.push({ kind: 'heal', actorId: actor.id, actorName: actor.name, amount: actor.hp - before, hpAfter: actor.hp, maxHp: actor.maxHp });
     svgEffects.push(`<circle cx="${actor.pos[0] * 40 + 20}" cy="${actor.pos[1] * 40 + 20}" r="10" fill="#22c55e" opacity="0.7" />`);
   }
 
@@ -440,9 +530,11 @@ export async function resolveWegoRound(
       fled.add(actor.id);
       actor.status = 'Alive';
       log.push(`🏃 ${actor.name} вырывается из боя (d20=${d20}+2 vs DC ${dc}) — сражение покинуто!`);
+      pushNote('🏃', `вырывается из боя (d20=${d20}+2 vs DC ${dc})`, actor);
     } else {
       dodging.add(actor.id); // не ушёл — хотя бы уклоняется
       log.push(`🏃 ${actor.name} пытается бежать, но отрезан (d20=${d20}+2 vs DC ${dc}) — остаётся в бою, уклоняется.`);
+      pushNote('🏃', `отрезан — остаётся в бою, уклоняется (d20=${d20}+2 vs DC ${dc})`, actor);
     }
   }
 
@@ -468,9 +560,11 @@ export async function resolveWegoRound(
       }
       case 'dash':
         log.push(`💨 ${actor.name} совершает рывок — дополнительное перемещение в следующей фазе.`);
+        pushNote('💨', 'совершает рывок — дополнительное перемещение в следующей фазе', actor);
         break;
       case 'dodge':
         log.push(`🌀 ${actor.name} уходит в защиту: атаки по нему до следующего хода — с помехой.`);
+        pushNote('🌀', 'уходит в защиту: атаки по нему — с помехой', actor);
         break;
       case 'item':
         await doHeal(actor, action.dice_seed ?? `${actor.id}_item`);
@@ -480,6 +574,7 @@ export async function resolveWegoRound(
         if (ally && alive(ally)) {
           helped.add(ally.id);
           log.push(`🤝 ${actor.name} помогает ${ally.name}: следующая атака союзника — с преимуществом.`);
+          pushNote('🤝', `помогает ${ally.name}: следующая атака союзника — с преимуществом`, actor);
         }
         break;
       }
@@ -545,6 +640,10 @@ export async function resolveWegoRound(
     }
     if (endPos[0] !== startPos[0] || endPos[1] !== startPos[1]) {
       actor.pos = endPos;
+      events.push({
+        kind: 'move', actorId: actor.id, actorName: actor.name,
+        from: startPos, to: endPos, path: [startPos, endPos], dash: false,
+      });
       const pathStr = [startPos, ...path.filter((_, i) => i <= path.findIndex(p => p[0] === endPos[0] && p[1] === endPos[1]))]
         .map(([x, y]) => `${x * 40 + 20},${y * 40 + 20}`)
         .join(' ');
@@ -577,6 +676,16 @@ export async function resolveWegoRound(
     combatStatus = 'Ended_Defeat';
     log.push(`\n💀 ПАРТИЯ ПАЛА. Крипта заберёт ещё одну историю.`);
   }
+
+  // XP за павших врагов: xpValue из данных, иначе оценка по maxHp/AC
+  const xpGained = nextEntities
+    .filter(e => e.role === 'enemy' && e.status === 'Dead')
+    .reduce((sum, e) => sum + (e.xpValue ?? Math.round(e.maxHp * 2 + e.ac * 5)), 0);
+  if (xpGained > 0) {
+    log.push(`⭐ Опыт за павших врагов: ${xpGained} XP.`);
+    events.push({ kind: 'xp', amount: xpGained });
+  }
+  events.push({ kind: 'outcome', status: combatStatus });
 
   // --- SVG-карта (из данных, не из констант) ----------------------------------
   const wallsSvg = [...walls].map(([x, y]) => {
@@ -654,6 +763,8 @@ export async function resolveWegoRound(
     nextEntities,
     combatStatus,
     mechanicalLog: log,
+    events,
+    xpGained,
     generatedSvg,
     suggestedProse,
     statePayload,

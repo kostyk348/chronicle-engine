@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Entity,
   PlayerIntentPayload,
@@ -8,6 +8,11 @@ import {
 import {
   Compass,
   Play,
+  Pause,
+  SkipForward,
+  FastForward,
+  X,
+  Clapperboard,
   RotateCcw,
   Sparkles,
   Shield,
@@ -39,12 +44,19 @@ import {
 import { buildPlayerIntentEml, downloadEmlFile } from '../utils/mimeEml';
 import { generateRandomSeed } from '../utils/cryptoDice';
 import { playSfx, speakSpeechText, stopAllSpeech } from '../utils/audioSynthesizer';
+import {
+  buildReplayTimeline, applyFrame, fastForward,
+  ReplayFrame, RoundReplayData,
+} from '../utils/roundReplay';
 import { ActiveTab } from './Header';
 
 interface TacticalViewProps {
   round: number;
   entities: Entity[];
   combatStatus?: 'Ongoing' | 'Ended_Victory' | 'Ended_Defeat' | 'Fled';
+  /** последний разрешённый раунд — по нему запускается кинематографичный реплей */
+  lastRound?: RoundReplayData | null;
+  onReplayDismiss?: () => void;
   onTransmitIntent: (rawEml: string, intent: PlayerIntentPayload, roleplay: RoleplayPayload) => void;
   onOpenDiceModal: () => void;
   onSimulateWegoRound?: (customIntents?: PlayerIntentPayload[]) => Promise<void>;
@@ -60,6 +72,8 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
   round,
   entities,
   combatStatus = 'Ongoing',
+  lastRound,
+  onReplayDismiss,
   onTransmitIntent,
   onOpenDiceModal,
   onSimulateWegoRound,
@@ -80,13 +94,23 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
   const [isPathingMode, setIsPathingMode] = useState<boolean>(false);
 
   // Action Builder State
-  const [actionType, setActionType] = useState<'cast_spell' | 'attack' | 'dash' | 'dodge'>('cast_spell');
+  const [actionType, setActionType] = useState<'cast_spell' | 'attack' | 'dodge' | 'help'>('cast_spell');
   const [selectedSpell, setSelectedSpell] = useState<string>('Scorching Ray');
   const [spellSlot, setSpellSlot] = useState<number>(2);
+  const [selectedWeapon, setSelectedWeapon] = useState<string>('');
   const [primaryTargetId, setPrimaryTargetId] = useState<string>('mob_shaman');
   const [secondaryTargetId, setSecondaryTargetId] = useState<string>('mob_archer_1');
   const [fallbackTrigger, setFallbackTrigger] = useState<string>('target_mob_shaman_dead_before_turn');
   const [reactionSpell, setReactionSpell] = useState<string>('Shield');
+
+  // Cinematic Replay State — играет последний разрешённый раунд
+  const [replayOpen, setReplayOpen] = useState<boolean>(false);
+  const [replayFrames, setReplayFrames] = useState<ReplayFrame[]>([]);
+  const [replayEntities, setReplayEntities] = useState<Entity[]>([]);
+  const [replayIdx, setReplayIdx] = useState<number>(0);
+  const [replayPlaying, setReplayPlaying] = useState<boolean>(false);
+  const [replaySpeed, setReplaySpeed] = useState<number>(1);
+  const [replayCaption, setReplayCaption] = useState<string>('');
 
   // Roleplay Drawer State
   const [speech, setSpeech] = useState<string>('Пепел к пеплу, тварь! Попробуй это пламя!');
@@ -114,7 +138,76 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
   const enemies = entities.filter(e => e.role === 'enemy');
   const players = entities.filter(e => e.role === 'player' || e.role === 'npc');
 
+  // Во время реплея сетка показывает реплей-состояние, а не реальный стол
+  const viewEntities = replayOpen ? replayEntities : entities;
+  const currentFrame: ReplayFrame | null =
+    replayOpen && replayIdx > 0 && replayIdx <= replayFrames.length ? replayFrames[replayIdx - 1] : null;
+
+  // Новый разрешённый раунд приехал — открываем кинематографичный реплей
+  useEffect(() => {
+    if (!lastRound || lastRound.events.length === 0) return;
+    setReplayFrames(buildReplayTimeline(lastRound.events));
+    setReplayEntities(JSON.parse(JSON.stringify(lastRound.startEntities)));
+    setReplayIdx(0);
+    setReplayCaption(`Реплей раунда ${lastRound.round}: ${lastRound.events.length} событий`);
+    setReplaySpeed(1);
+    setReplayOpen(true);
+    setReplayPlaying(true);
+  }, [lastRound]);
+
+  // Смена актора — старый набранный путь больше не имеет смысла
+  useEffect(() => {
+    setPlannedPath([]);
+  }, [selectedActorId]);
+
+  // Автопроигрывание: таймер на duration текущего кадра, делённый на скорость
+  useEffect(() => {
+    if (!replayOpen || !replayPlaying) return;
+    if (replayIdx >= replayFrames.length) {
+      setReplayPlaying(false);
+      return;
+    }
+    const frame = replayFrames[replayIdx];
+    const t = setTimeout(() => {
+      setReplayEntities(prev => applyFrame(prev, frame));
+      setReplayCaption(frame.caption);
+      setReplayIdx(i => i + 1);
+      playSfx(
+        frame.arc?.crit ? 'fire_spell'
+          : frame.arc ? 'sword_slash'
+          : frame.move ? 'dice_roll'
+          : frame.popup?.tone === 'heal' ? 'shield_block'
+          : 'dice_roll'
+      );
+    }, frame.durationMs / replaySpeed);
+    return () => clearTimeout(t);
+  }, [replayOpen, replayPlaying, replayIdx, replayFrames, replaySpeed]);
+
+  const replayStep = () => {
+    if (replayIdx >= replayFrames.length) return;
+    const frame = replayFrames[replayIdx];
+    setReplayEntities(prev => applyFrame(prev, frame));
+    setReplayCaption(frame.caption);
+    setReplayIdx(i => i + 1);
+    playSfx('dice_roll');
+  };
+
+  const handleReplaySkipAll = () => {
+    setReplayEntities(prev => fastForward(prev, replayFrames, replayIdx));
+    const last = replayFrames[replayFrames.length - 1];
+    setReplayCaption(last ? last.caption : 'Реплей завершён');
+    setReplayIdx(replayFrames.length);
+    setReplayPlaying(false);
+  };
+
+  const handleReplayClose = () => {
+    setReplayOpen(false);
+    setReplayPlaying(false);
+    onReplayDismiss?.();
+  };
+
   const handleCellClick = (x: number, y: number) => {
+    if (replayOpen) return; // во время реплея стол заморожен
     if (!isPathingMode) {
       // In DM mode, allow moving selected entity to cell
       if (controlMode === 'master' && selectedEntity) {
@@ -172,6 +265,11 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
       { target_id: secondaryTargetId, dice_seed: generateRandomSeed('seed_ray3') },
     ];
 
+    const weaponName =
+      selectedWeapon || (selectedEntity?.weapons ?? [])[0]?.name;
+
+    // Честный d20: свежий случайный сид на каждый интент — перекинуть нельзя,
+    // а повторять прошлые броски бессмысленно
     const intent: PlayerIntentPayload = {
       actor_id: selectedActorId,
       round,
@@ -183,16 +281,21 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
         type: actionType,
         spell_name: actionType === 'cast_spell' ? selectedSpell : undefined,
         slot_level: actionType === 'cast_spell' ? spellSlot : undefined,
-        target_id: primaryTargetId,
+        weapon_name: actionType === 'attack' ? weaponName : undefined,
+        target_id: actionType === 'dodge' ? undefined : primaryTargetId,
         rays: actionType === 'cast_spell' && selectedSpell === 'Scorching Ray' ? rays : undefined,
+        dice_seed: generateRandomSeed(`seed_${selectedActorId}`),
       },
-      fallback_rules: [
-        {
-          trigger: fallbackTrigger,
-          redirect_all_to: secondaryTargetId,
-          description: `Если ${primaryTargetId} погибает до выстрела, перенаправить лучи в ${secondaryTargetId}`,
-        },
-      ],
+      fallback_rules:
+        actionType === 'cast_spell'
+          ? [
+              {
+                trigger: fallbackTrigger,
+                redirect_all_to: secondaryTargetId,
+                description: `Если ${primaryTargetId} погибает до выстрела, перенаправить лучи в ${secondaryTargetId}`,
+              },
+            ]
+          : [],
       reaction: {
         trigger: 'hit_by_melee_attack',
         spell: reactionSpell,
@@ -424,8 +527,8 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
               >
                 {/* SVG Tactical Overlay for paths, spell rays, and area effects */}
                 <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
-                  {/* Planned movement path */}
-                  {plannedPath.length > 0 && selectedEntity && (
+                  {/* Planned movement path (заморожен во время реплея) */}
+                  {!replayOpen && plannedPath.length > 0 && selectedEntity && (
                     <polyline
                       points={[selectedEntity.pos, ...plannedPath]
                         .map(([px, py]) => `${((px + 0.5) / 16) * 100}% ${((py + 0.5) / 12) * 100}%`)
@@ -439,7 +542,7 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                   )}
 
                   {/* Spell rays if Scorching Ray */}
-                  {actionType === 'cast_spell' && selectedSpell === 'Scorching Ray' && selectedEntity && (
+                  {!replayOpen && actionType === 'cast_spell' && selectedSpell === 'Scorching Ray' && selectedEntity && (
                     <>
                       {enemies.slice(0, 2).map((target, tIdx) => (
                         <line
@@ -456,12 +559,41 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                       ))}
                     </>
                   )}
+
+                  {/* Replay attack arc: кто в кого стрелял на текущем кадре */}
+                  {replayOpen && currentFrame?.arc && (() => {
+                    const from = viewEntities.find(e => e.id === currentFrame.arc!.fromId);
+                    const to = viewEntities.find(e => e.id === currentFrame.arc!.toId);
+                    if (!from || !to) return null;
+                    return (
+                      <>
+                        <line
+                          x1={`${((from.pos[0] + 0.5) / 16) * 100}%`}
+                          y1={`${((from.pos[1] + 0.5) / 12) * 100}%`}
+                          x2={`${((to.pos[0] + 0.5) / 16) * 100}%`}
+                          y2={`${((to.pos[1] + 0.5) / 12) * 100}%`}
+                          stroke={currentFrame.arc.crit ? '#fbbf24' : currentFrame.arc.color}
+                          strokeWidth={currentFrame.arc.crit ? 4 : 2.5}
+                          strokeDasharray={currentFrame.arc.dashed ? '4,3' : undefined}
+                          opacity="0.95"
+                        />
+                        <circle
+                          cx={`${((to.pos[0] + 0.5) / 16) * 100}%`}
+                          cy={`${((to.pos[1] + 0.5) / 12) * 100}%`}
+                          r="6"
+                          fill="none"
+                          stroke={currentFrame.arc.crit ? '#fbbf24' : '#f87171'}
+                          strokeWidth="2"
+                          opacity="0.9"
+                        />
+                      </>
+                    );
+                  })()}
                 </svg>
 
                 {/* Grid Cells Generator (16x12 = 192 cells) */}
                 {Array.from({ length: 12 }).map((_, y) =>
                   Array.from({ length: 16 }).map((_, x) => {
-                    const entityOnCell = entities.find(e => e.pos[0] === x && e.pos[1] === y);
                     const isPathCell = plannedPath.some(([px, py]) => px === x && py === y);
                     const isSelected = selectedEntity && selectedEntity.pos[0] === x && selectedEntity.pos[1] === y;
                     const isAltar = x >= 11 && x <= 13 && y >= 7 && y <= 8;
@@ -493,39 +625,133 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                             {plannedPath.findIndex(([px, py]) => px === x && py === y) + 1}
                           </span>
                         )}
-
-                        {/* Entity Token */}
-                        {entityOnCell && (
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedActorId(entityOnCell.actorId || entityOnCell.id);
-                              playSfx('dice_roll');
-                            }}
-                            className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold text-[10px] text-white shadow-lg transition-transform transform hover:scale-110 z-20 cursor-pointer ${
-                              entityOnCell.status === 'Dead'
-                                ? 'bg-stone-700 opacity-40 border border-stone-600'
-                                : entityOnCell.role === 'player'
-                                ? 'bg-purple-600 ring-2 ring-purple-400'
-                                : entityOnCell.role === 'npc'
-                                ? 'bg-emerald-600 ring-2 ring-emerald-400'
-                                : 'bg-red-600 ring-2 ring-red-400'
-                            }`}
-                            title={`${entityOnCell.name} (${entityOnCell.hp}/${entityOnCell.maxHp} HP)`}
-                          >
-                            {entityOnCell.status === 'Dead' ? (
-                              <Skull className="w-3.5 h-3.5 text-stone-300" />
-                            ) : (
-                              entityOnCell.name.substring(0, 2).toUpperCase()
-                            )}
-                          </div>
-                        )}
                       </div>
                     );
                   })
                 )}
+
+                {/* Token Layer — абсолютные токены: движение анимируется CSS-переходом */}
+                {viewEntities.map(e => {
+                  const isDead = e.status === 'Dead';
+                  const isReplayActor = replayOpen && currentFrame?.move?.actorId === e.id;
+                  return (
+                    <div
+                      key={e.id}
+                      className="absolute z-20 pointer-events-none"
+                      style={{
+                        left: `${((e.pos[0] + 0.5) / 16) * 100}%`,
+                        top: `${((e.pos[1] + 0.5) / 12) * 100}%`,
+                        transition: 'left 480ms ease-out, top 480ms ease-out',
+                      }}
+                    >
+                      <div
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          if (replayOpen) return;
+                          setSelectedActorId(e.actorId || e.id);
+                          playSfx('dice_roll');
+                        }}
+                        className={`-translate-x-1/2 -translate-y-1/2 w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold text-[10px] text-white shadow-lg transition-transform hover:scale-110 cursor-pointer pointer-events-auto ${
+                          isDead
+                            ? 'bg-stone-700 opacity-40 border border-stone-600'
+                            : e.role === 'player'
+                            ? 'bg-purple-600 ring-2 ring-purple-400'
+                            : e.role === 'npc'
+                            ? 'bg-emerald-600 ring-2 ring-emerald-400'
+                            : 'bg-red-600 ring-2 ring-red-400'
+                        } ${isReplayActor ? 'scale-125 shadow-[0_0_18px_rgba(212,175,55,0.95)] ring-[#d4af37]' : ''}`}
+                        title={`${e.name} (${e.hp}/${e.maxHp} HP)`}
+                      >
+                        {isDead ? (
+                          <Skull className="w-3.5 h-3.5 text-stone-300" />
+                        ) : (
+                          e.name.substring(0, 2).toUpperCase()
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Floating popup текущего кадра: урон, лечение, крит, промах */}
+                {replayOpen && currentFrame?.popup && (() => {
+                  const p = currentFrame.popup;
+                  const ent = viewEntities.find(e => e.id === p.entityId);
+                  if (!ent) return null;
+                  const toneCls =
+                    p.tone === 'damage' ? 'text-red-400'
+                    : p.tone === 'heal' ? 'text-emerald-400'
+                    : p.tone === 'crit' ? 'text-amber-300'
+                    : p.tone === 'miss' ? 'text-zinc-400'
+                    : 'text-purple-300';
+                  return (
+                    <div
+                      key={`popup-${currentFrame.eventIndex}`}
+                      className="absolute z-30 pointer-events-none animate-fade-in"
+                      style={{
+                        left: `${((ent.pos[0] + 0.5) / 16) * 100}%`,
+                        top: `${((ent.pos[1] + 0.5) / 12) * 100}%`,
+                      }}
+                    >
+                      <div className={`-translate-x-1/2 -translate-y-[230%] text-sm font-black whitespace-nowrap drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)] ${toneCls}`}>
+                        {p.text}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
+
+            {/* Cinematic Replay Ticker */}
+            {replayOpen && (
+              <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-[#0c0c0c] border border-[#d4af37]/30 rounded-xl text-xs">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <Clapperboard className="w-4 h-4 text-[#d4af37] shrink-0" />
+                  <span className="font-mono text-[#f4f4f5] truncate">{replayCaption}</span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="font-mono text-[#71717a] px-1">
+                    {Math.min(replayIdx, replayFrames.length)}/{replayFrames.length}
+                  </span>
+                  <button
+                    onClick={() => setReplayPlaying(p => !p)}
+                    disabled={replayIdx >= replayFrames.length}
+                    className="px-2 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-[#d4af37] border border-[#27272a] transition disabled:opacity-40"
+                    title={replayPlaying ? 'Пауза' : 'Играть'}
+                  >
+                    {replayPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={replayStep}
+                    disabled={replayIdx >= replayFrames.length}
+                    className="px-2 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-[#d4d4d8] border border-[#27272a] transition disabled:opacity-40"
+                    title="Один кадр вперёд"
+                  >
+                    <SkipForward className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setReplaySpeed(s => (s === 1 ? 2 : s === 2 ? 4 : 1))}
+                    className="px-2 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-[#d4af37] border border-[#27272a] font-mono transition"
+                    title="Скорость воспроизведения"
+                  >
+                    ×{replaySpeed}
+                  </button>
+                  <button
+                    onClick={handleReplaySkipAll}
+                    className="px-2 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-[#d4d4d8] border border-[#27272a] transition"
+                    title="Применить всё сразу"
+                  >
+                    <FastForward className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={handleReplayClose}
+                    className="px-2 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-[#71717a] hover:text-[#f4f4f5] border border-[#27272a] transition"
+                    title="Закрыть реплей"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Selected Unit Quick Controller */}
             {selectedEntity && (
@@ -700,6 +926,28 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                   <Sword className="w-3.5 h-3.5" />
                   Атака оружием
                 </button>
+                <button
+                  onClick={() => setActionType('dodge')}
+                  className={`p-2 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                    actionType === 'dodge'
+                      ? 'bg-sky-950/80 border-sky-600 text-sky-300 font-bold'
+                      : 'bg-[#0c0c0c] border-[#27272a] text-[#a1a1aa]'
+                  }`}
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  Уклонение
+                </button>
+                <button
+                  onClick={() => setActionType('help')}
+                  className={`p-2 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                    actionType === 'help'
+                      ? 'bg-emerald-950/80 border-emerald-600 text-emerald-300 font-bold'
+                      : 'bg-[#0c0c0c] border-[#27272a] text-[#a1a1aa]'
+                  }`}
+                >
+                  <Heart className="w-3.5 h-3.5" />
+                  Помощь союзнику
+                </button>
               </div>
             </div>
 
@@ -719,21 +967,6 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                   </select>
                 </div>
 
-                <div>
-                  <label className="text-[11px] text-[#a1a1aa]">Основная цель (Primary Target):</label>
-                  <select
-                    value={primaryTargetId}
-                    onChange={e => setPrimaryTargetId(e.target.value)}
-                    className="w-full bg-[#18181b] border border-[#27272a] rounded-lg p-2 text-xs text-red-300 mt-1"
-                  >
-                    {enemies.map(en => (
-                      <option key={en.id} value={en.id}>
-                        {en.name} (HP: {en.hp}/{en.maxHp})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
                 {/* Fallback Condition */}
                 <div>
                   <label className="text-[11px] text-[#a1a1aa]">Условие перенаправления (Fallback Trigger):</label>
@@ -748,6 +981,47 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                     ↳ Если цель погибла до хода, лучи перенаправятся во второстепенного врага.
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Weapon Details if Attack */}
+            {actionType === 'attack' && (
+              <div className="p-3 bg-[#0c0c0c] border border-[#27272a] rounded-xl text-xs">
+                <label className="text-[11px] text-[#a1a1aa]">Оружие {selectedEntity?.name ?? ''}:</label>
+                <select
+                  value={selectedWeapon || (selectedEntity?.weapons ?? [])[0]?.name || ''}
+                  onChange={e => setSelectedWeapon(e.target.value)}
+                  className="w-full bg-[#18181b] border border-[#27272a] rounded-lg p-2 text-xs text-[#f4f4f5] mt-1"
+                >
+                  {(selectedEntity?.weapons ?? []).length === 0 && <option value="">Кулаки (1)</option>}
+                  {(selectedEntity?.weapons ?? []).map(w => (
+                    <option key={w.name} value={w.name}>
+                      {w.name} ({w.damageDice ?? w.damage}, дистанция {w.range})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Shared Target for attack / cast_spell / help */}
+            {(actionType === 'attack' || actionType === 'cast_spell' || actionType === 'help') && (
+              <div>
+                <label className="text-xs font-medium text-[#d4d4d8]">
+                  {actionType === 'help' ? 'Кому помогаем (следующая атака с преимуществом):' : 'Основная цель (Primary Target):'}
+                </label>
+                <select
+                  value={primaryTargetId}
+                  onChange={e => setPrimaryTargetId(e.target.value)}
+                  className={`w-full bg-[#18181b] border border-[#27272a] rounded-lg p-2 text-xs mt-1.5 ${
+                    actionType === 'help' ? 'text-emerald-300' : 'text-red-300'
+                  }`}
+                >
+                  {(actionType === 'help' ? players : enemies).map(t => (
+                    <option key={t.id} value={t.actorId || t.id}>
+                      {t.name} (HP {t.hp}/{t.maxHp})
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
 
