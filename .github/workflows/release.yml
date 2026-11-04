@@ -27,12 +27,16 @@ jobs:
           - label: Linux (AppImage/deb/rpm)
             os: ubuntu-22.04
             args: ''
+          # macOS собирается нативно под архитектуру раннера: macos-latest —
+          # Apple Silicon, macos-13 — Intel. Явный --target <host-arch> ломает
+          # бандлер: cargo кладёт артефакты в target/<triple>/, а бандлер ищет
+          # в target/release/. Флаг не ставим — dmg получит архитектуру в имени.
           - label: macOS (Apple Silicon dmg)
             os: macos-latest
-            args: '--target aarch64-apple-darwin'
+            args: ''
           - label: macOS (Intel dmg)
             os: macos-13
-            args: '--target x86_64-apple-darwin'
+            args: ''
           - label: Windows (MSI/NSIS)
             os: windows-latest
             args: ''
@@ -49,10 +53,6 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Add cross target (macOS)
-        if: matrix.os == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
