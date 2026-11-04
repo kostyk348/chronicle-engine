@@ -437,13 +437,18 @@ fn spawn_host_peer(mut stream: TcpStream, ctx: HostCtx, shared: SharedState, eve
             campaign_eml: campaign,
             players: players.clone(),
         };
-        let welcome_ok = write_frame(
-            &mut stream,
-            &Envelope::new("welcome", "host", 0, serde_json::to_value(&welcome).unwrap_or_default())
-                .to_frame()
-                .unwrap_or_default(),
-        )
-        .is_ok();
+        // welcome уходит через общий канал writer-потока, а не напрямую в stream:
+        // write_frame пишет длину и payload отдельными write_all, и при одновременных
+        // подключениях чужой roster-броадкаст из writer-потока может вклиниться
+        // между ними и испортить поток кадров (welcome «терялся» на переполненном
+        // столе). После спавна writer-потока он единственный писатель в сокет.
+        let welcome_ok = out_tx
+            .send(
+                Envelope::new("welcome", "host", 0, serde_json::to_value(&welcome).unwrap_or_default())
+                    .to_frame()
+                    .unwrap_or_default(),
+            )
+            .is_ok();
         if !welcome_ok {
             return cleanup_host_peer(&shared, &name, &events_tx);
         }
