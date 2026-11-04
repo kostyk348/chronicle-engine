@@ -46,8 +46,10 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Add macOS universal targets
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
