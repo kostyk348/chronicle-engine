@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Compass,
+  Link2,
   Feather,
   Palette,
   BookOpen,
@@ -15,7 +16,7 @@ import {
 } from 'lucide-react';
 import { playSfx } from '../utils/audioSynthesizer';
 
-export type ActiveTab = 'tactical' | 'party' | 'dm_scribe' | 'artist' | 'book' | 'audiobook' | 'vault';
+export type ActiveTab = 'tactical' | 'party' | 'dm_scribe' | 'artist' | 'book' | 'audiobook' | 'vault' | 'link';
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -46,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
     { id: 'book', label: 'Верстка книги (Typst)', icon: BookOpen },
     { id: 'audiobook', label: 'Аудиоспектакль (.M4B)', icon: Headphones },
     { id: 'vault', label: 'EML Vault', badge: emlCount, icon: HardDrive },
+    { id: 'link', label: 'Chronicle Link (сеть)', icon: Link2 },
   ];
 
   return (
