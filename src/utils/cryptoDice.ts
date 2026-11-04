@@ -75,6 +75,36 @@ export async function calculateCommitRevealD20(
   };
 }
 
+/**
+ * Deterministic uint32 stream from the commit-reveal pair.
+ * Every element is HMAC(key, msg:idx) — independent 256-bit outputs,
+ * so rolls never correlate. Used by the WEGO engine for XdY damage rolls,
+ * advantage/disadvantage pairs and AI decisions.
+ */
+export async function deriveUint32Stream(
+  key: string,
+  msg: string,
+  count: number
+): Promise<number[]> {
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const hex = await hmacSha256(key, `${msg}#${i}`);
+    for (let j = 0; j + 8 <= hex.length && out.length < count; j += 8) {
+      out.push(parseInt(hex.substring(j, j + 8), 16) >>> 0);
+    }
+  }
+  return out.slice(0, count);
+}
+
+/** Uniform d20 with rejection sampling (no modulo bias). */
+export async function deriveD20(key: string, msg: string): Promise<number> {
+  const stream = await deriveUint32Stream(key, msg, 10);
+  for (const u of stream) {
+    if (u < 4294967290) return (u % 20) + 1; // 4294967290 = 20 * 214748364
+  }
+  return (stream[0] % 20) + 1;
+}
+
 export async function sha256Commitment(seed: string): Promise<string> {
   if (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) {
     try {

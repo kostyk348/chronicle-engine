@@ -25,7 +25,21 @@ export interface Entity {
   emotions?: Record<EmotionType, string>;
   color: string;
   spells?: string[];
-  weapons?: { name: string; damage: string; range: number }[];
+  weapons?: WeaponSpec[];
+  // explicit override of the to-hit bonus; otherwise derived from level/class
+  attackBonusOverride?: number;
+}
+
+export interface WeaponSpec {
+  name: string;
+  /** legacy free-form damage text; the engine prefers damageDice */
+  damage: string;
+  /** canonical dice expression, e.g. "1d12+3" or "2d6" */
+  damageDice?: string;
+  /** explicit to-hit bonus; otherwise derived from level */
+  attackBonus?: number;
+  /** squares; 1 = melee */
+  range: number;
 }
 
 export interface RayTarget {
@@ -48,7 +62,7 @@ export interface ReactionRule {
 }
 
 export interface PlayerActionIntent {
-  type: 'attack' | 'cast_spell' | 'dash' | 'dodge' | 'item' | 'help';
+  type: 'attack' | 'cast_spell' | 'dash' | 'dodge' | 'item' | 'help' | 'flee';
   spell_name?: string;
   slot_level?: number;
   weapon_name?: string;

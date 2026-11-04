@@ -1,6 +1,6 @@
 [package]
 name = "chronicle-engine"
-version = "0.1.0"
+version = "1.2.0"
 description = "Chronicle Engine — TTRPG platform (native desktop)"
 authors = ["Chronicle Contributors"]
 license = "MIT"
@@ -25,3 +25,4 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 base64 = "0.22"
+sha2 = "0.10"

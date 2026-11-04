@@ -30,6 +30,7 @@ import { AudiobookStudio } from './components/AudiobookStudio';
 import { VaultExplorer } from './components/VaultExplorer';
 import { PartyInventoryStudio } from './components/PartyInventoryStudio';
 import { CryptoDiceModal } from './components/CryptoDiceModal';
+import NetworkLobby from './components/NetworkLobby';
 import { parseEmlString, buildMasterResolutionEml } from './utils/mimeEml';
 import { resolveWegoRound } from './utils/wegoResolver';
 import { playSfx } from './utils/audioSynthesizer';
@@ -273,16 +274,16 @@ export default function App() {
           spell_name: 'Scorching Ray',
           slot_level: 2,
           rays: [
-            { target_id: 'mob_goblin_shaman', dice_seed: 'seed-elena-ray-1' },
-            { target_id: 'mob_goblin_shaman', dice_seed: 'seed-elena-ray-2' },
-            { target_id: 'mob_goblin_shaman', dice_seed: 'seed-elena-ray-3' },
+            { target_id: 'mob_shaman', dice_seed: 'seed-elena-ray-1' },
+            { target_id: 'mob_shaman', dice_seed: 'seed-elena-ray-2' },
+            { target_id: 'mob_shaman', dice_seed: 'seed-elena-ray-3' },
           ],
           dice_seed: 'seed-elena-03',
         },
         fallback_rules: [
           {
             trigger: 'target_dead',
-            redirect_all_to: 'mob_goblin_archer_1',
+            redirect_all_to: 'mob_archer_1',
             description: 'Перенаправить лучи на лучника',
           },
         ],
@@ -294,7 +295,7 @@ export default function App() {
         action: {
           type: 'attack',
           weapon_name: 'Greatsword',
-          target_id: 'obj_altar',
+          target_id: 'mob_archer_1',
           dice_seed: 'seed-torin-03',
         },
       },
@@ -625,6 +626,20 @@ export default function App() {
           <VaultExplorer
             emlVault={emlVault}
             onImportEml={handleImportEml}
+          />
+        )}
+        {activeTab === 'link' && (
+          <NetworkLobby
+            round={currentRound}
+            entities={entities}
+            campaignScroll={JSON.stringify(buildCampaignSnapshot())}
+            onApplyScroll={(text) => {
+              try {
+                if (!applyCampaignSnapshot(JSON.parse(text))) playSfx('shield_block');
+              } catch (e) {
+                console.warn('Scroll apply failed:', e);
+              }
+            }}
           />
         )}
       </main>
