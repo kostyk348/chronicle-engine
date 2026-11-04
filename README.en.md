@@ -131,3 +131,5 @@ MIT — play, hack, publish. [LICENSE](LICENSE)
 <div align="center">
 <sub>Chronicle Engine — the engine after which every party has a book.</sub>
 </div>
+
+**Gray screen on Linux startup?** Fixed since 1.6.1: the engine sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself (WebKitGTK compositing breaks on NVIDIA and some Mesa builds). For older builds or VMs: prefix the AppImage run with `WEBKIT_DISABLE_DMABUF_RENDERER=1` or `LIBGL_ALWAYS_SOFTWARE=1`.

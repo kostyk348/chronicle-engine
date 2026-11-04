@@ -27,9 +27,12 @@ jobs:
           - label: Linux (AppImage/deb/rpm)
             os: ubuntu-22.04
             args: ''
-          - label: macOS (universal dmg)
+          - label: macOS (Apple Silicon dmg)
             os: macos-latest
-            args: '--target universal-apple-darwin'
+            args: '--target aarch64-apple-darwin'
+          - label: macOS (Intel dmg)
+            os: macos-13
+            args: '--target x86_64-apple-darwin'
           - label: Windows (MSI/NSIS)
             os: windows-latest
             args: ''
@@ -47,9 +50,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Add macOS universal targets
+      - name: Add cross target (macOS)
         if: matrix.os == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+        run: rustup target add aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -74,7 +77,7 @@ jobs:
           tauriScript: 'npm run tauri --'
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: 'Chronicle Engine ${{ inputs.tag || github.ref_name }}'
-          releaseBody: 'Скачайте сборку для своей платформы: dmg (macOS, universal — Intel и Apple Silicon), MSI/NSIS (Windows), AppImage/deb/rpm (Linux).'
+          releaseBody: 'Скачайте сборку для своей платформы: dmg для macOS (aarch64 — Apple Silicon, x64 — Intel), MSI/NSIS для Windows, AppImage/deb/rpm для Linux.'
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
