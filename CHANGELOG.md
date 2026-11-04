@@ -3,7 +3,19 @@
 Все заметные изменения проекта документируются в этом файле.
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/).
 
-## [1.6.4] — Hotfix 4: GLVND принудительно на Mesa + встроенная EGL-диагностика
+## [1.6.5] — Hotfix 5: самовосстановление GLVND, когда Mesa-json снесён
+
+Лог 1.6.4 с машины пользователя: диагностика отработала, но `0x300c` остался — GLVND не нашёл ни одного вендора. Значит, `50_mesa.json` на этой машине отсутствует (классическое поведение `.run`-установщика NVIDIA: свой vendor-json ставит, Mesa-шный сносит), и направление GLVND «на него» в 1.6.4 было холостым.
+
+### Fixed
+- Если `50_mesa.json` нет ни в `/usr/share/glvnd/egl_vendor.d/`, ни в `/etc/glvnd/`, но системная `libEGL_mesa.so.0` на месте — приложение само генерирует vendor-json (`/tmp/chronicle-egl-vendor-mesa.json`) на найденную библиотеку и направляет GLVND на Mesa. Софтверный EGL поднимается даже на «выжженной» NVIDIA-системе.
+- Если `libEGL_mesa.so.0` нет вовсе — никакая переменная не спасёт; в лог печатается точное лечение: `sudo apt install libegl-mesa0 libgl1-mesa-dri`.
+
+### Changed
+- Пробник EGL печатает состояние системы: активный `__EGL_VENDOR_LIBRARY_FILENAMES` и найдена ли Mesa-библиотека — следующий пользовательский лог сразу даёт диагноз без угадывания.
+- Пользовательские значения `__EGL_VENDOR_LIBRARY_FILENAMES` / `LIBGL_ALWAYS_SOFTWARE` не перетираются; `CHRONICLE_FORCE_GPU=1` по-прежнему отключает весь обход.
+
+
 
 Лог 1.6.3 показал: `LIBGL_ALWAYS_SOFTWARE=1` сам по себе не спасает, если GLVND вообще не видит Mesa-вендора (частая история на Mint/Ubuntu с проприетарным NVIDIA — его конфиг в `/usr/share/glvnd/egl_vendor.d/` подменяет или masking-ует Mesa-шный).
 

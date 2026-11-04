@@ -38,12 +38,80 @@ fn egl_probe() {
       eprintln!("[Chronicle] EGL OK: EGL {major}.{minor} (софтверный режим активен)");
     } else {
       let code = get_error();
+      let vendor = std::env::var("__EGL_VENDOR_LIBRARY_FILENAMES").unwrap_or_default();
+      let mesa = find_mesa_egl_lib().unwrap_or("не найдена");
       eprintln!(
-        "[Chronicle] EGL недоступен (ошибка 0x{code:x}) — WebKit умрёт с серым окном.\n\
-         [Chronicle] Обход: __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json LIBGL_ALWAYS_SOFTWARE=1 <команда запуска>\n\
-         [Chronicle] Либо поставьте .deb — он использует системные webkit и Mesa."
+        "[Chronicle] EGL недоступен (ошибка 0x{code:x}) — WebKit умрёт с «Could not create default EGL display».\n\
+         [Chronicle] Состояние: __EGL_VENDOR_LIBRARY_FILENAMES={vendor:?}, libEGL_mesa: {mesa}\n\
+         [Chronicle] Лечение: sudo apt install libegl-mesa0 libgl1-mesa-dri — и запустить снова.\n\
+         [Chronicle] Либо поставьте .deb — он тянет зависимости автоматически."
       );
     }
+  }
+}
+
+/// Где искать vendor-библиотеку EGL от Mesa (Debian/Ubuntu/Mint multiarch,
+/// Fedora, Arch). Берём первую существующую.
+#[cfg(target_os = "linux")]
+fn find_mesa_egl_lib() -> Option<&'static str> {
+  const CANDIDATES: [&str; 5] = [
+    "/usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0",
+    "/usr/lib/aarch64-linux-gnu/libEGL_mesa.so.0",
+    "/usr/lib/riscv64-linux-gnu/libEGL_mesa.so.0",
+    "/usr/lib64/libEGL_mesa.so.0",
+    "/usr/lib/libEGL_mesa.so.0",
+  ];
+  CANDIDATES.into_iter().find(|p| std::path::Path::new(p).exists())
+}
+
+/// Восстановление EGL до инициализации WebKit. Фатальный случай — «Could not
+/// create default EGL display: EGL_BAD_PARAMETER»: GLVND не находит ни одного
+/// вендора, обычно потому что .run-установщик NVIDIA подменил или удалил
+/// /usr/share/glvnd/egl_vendor.d/50_mesa.json. Тогда генерируем vendor-json
+/// сами — на найденную системную libEGL_mesa.so.0 — и направляем GLVND на неё.
+/// Если Mesa-EGL в системе нет вовсе, никакая переменная не спасёт: печатаем
+/// точную apt-команду. Пользовательские значения переменных не перетираем.
+#[cfg(target_os = "linux")]
+fn egl_rescue() {
+  if std::env::var_os("CHRONICLE_FORCE_GPU").is_some() {
+    eprintln!("[Chronicle] CHRONICLE_FORCE_GPU задан — софтверный обход EGL отключён");
+    return;
+  }
+  if std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none() {
+    std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+  }
+  if std::env::var_os("__EGL_VENDOR_LIBRARY_FILENAMES").is_some() {
+    return; // пользователь настроил GLVND сам — не вмешиваемся
+  }
+  for json in [
+    "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
+    "/etc/glvnd/egl_vendor.d/50_mesa.json",
+  ] {
+    if std::path::Path::new(json).exists() {
+      std::env::set_var("__EGL_VENDOR_LIBRARY_FILENAMES", json);
+      return;
+    }
+  }
+  match find_mesa_egl_lib() {
+    Some(lib) => {
+      let generated = std::env::temp_dir().join("chronicle-egl-vendor-mesa.json");
+      let body =
+        format!("{{\"file_format_version\":\"1.0.0\",\"ICD\":{{\"library_path\":\"{lib}\"}}}}\n");
+      match std::fs::write(&generated, body) {
+        Ok(()) => {
+          std::env::set_var("__EGL_VENDOR_LIBRARY_FILENAMES", &generated);
+          eprintln!(
+            "[Chronicle] 50_mesa.json в системе нет — сгенерирован {}, вендор: {lib}",
+            generated.display()
+          );
+        }
+        Err(e) => eprintln!("[Chronicle] не удалось записать {}: {e}", generated.display()),
+      }
+    }
+    None => eprintln!(
+      "[Chronicle] libEGL_mesa.so.0 не найдена — софтверный EGL невозможен.\n\
+       [Chronicle] Лечение: sudo apt install libegl-mesa0 libgl1-mesa-dri"
+    ),
   }
 }
 
@@ -56,26 +124,7 @@ fn main() {
   {
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-
-    // Жёстче: на системах с битым EGL (NVIDIA + GLVND, свежие драйверы)
-    // WebProcess падает на самом старте с «Could not create default EGL
-    // display: EGL_BAD_PARAMETER. Aborting...» — окно остаётся серым при
-    // любых композитинг-флагах. Софтверный Mesa-EGL (llvmpipe) поднимается
-    // всегда, а этому UI аппаратное ускорение не нужно. CHRONICLE_FORCE_GPU=1
-    // отменяет софтверный режим для желающих проверить аппаратный путь.
-    if std::env::var("CHRONICLE_FORCE_GPU").is_err() {
-      std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
-
-      // Частая история на Mint/Ubuntu с проприетарным NVIDIA: GLVND видит
-      // только NVIDIA-вендора (его конфиг подменил Mesa-шный), и софтверный
-      // путь не выбирается даже с LIBGL_ALWAYS_SOFTWARE. Направляем GLVND на
-      // Mesa принудительно, если её vendor-json на месте.
-      const MESA_VENDOR: &str = "/usr/share/glvnd/egl_vendor.d/50_mesa.json";
-      if std::path::Path::new(MESA_VENDOR).exists() {
-        std::env::set_var("__EGL_VENDOR_LIBRARY_FILENAMES", MESA_VENDOR);
-      }
-    }
-
+    egl_rescue();
     egl_probe();
   }
 
