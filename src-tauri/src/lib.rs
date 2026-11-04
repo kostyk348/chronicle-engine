@@ -41,16 +41,22 @@ fn forward_events(app: AppHandle, rx: std::sync::mpsc::Receiver<link::LinkEvent>
     });
 }
 
-#[tauri::command]
-fn link_host(
-    app: AppHandle,
-    state: State<Mutex<LinkState>>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkHostOpts {
     port: u16,
     table: String,
     player_name: String,
     actors: Vec<String>,
     master_seed_commit: String,
     campaign_eml: Option<String>,
+}
+
+#[tauri::command]
+fn link_host(
+    app: AppHandle,
+    state: State<Mutex<LinkState>>,
+    opts: LinkHostOpts,
 ) -> Result<u16, String> {
     {
         let st = state.lock().map_err(|_| "poisoned")?;
@@ -59,12 +65,20 @@ fn link_host(
         }
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = link::run_host(port, &table, &player_name, actors, &master_seed_commit, campaign_eml, tx)?;
+    let handle = link::run_host(
+        opts.port,
+        &opts.table,
+        &opts.player_name,
+        opts.actors,
+        &opts.master_seed_commit,
+        opts.campaign_eml,
+        tx,
+    )?;
     forward_events(app, rx);
     let real_port = handle.port;
     let mut st = state.lock().map_err(|_| "poisoned")?;
     st.session = Some(LinkSession::Host(handle));
-    st.table = table.clone();
+    st.table = opts.table;
     st.role = "host".into();
     Ok(real_port)
 }

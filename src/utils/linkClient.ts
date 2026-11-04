@@ -58,14 +58,7 @@ export async function linkHost(opts: {
   campaignEml: string | null;
 }): Promise<number> {
   const { invoke } = await tauri();
-  return invoke<number>('link_host', {
-    port: opts.port,
-    table: opts.table,
-    playerName: opts.playerName,
-    actors: opts.actors,
-    masterSeedCommit: opts.masterSeedCommit,
-    campaignEml: opts.campaignEml,
-  });
+  return invoke<number>('link_host', { opts });
 }
 
 export async function linkJoin(opts: {
