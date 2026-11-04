@@ -947,7 +947,10 @@ mod tests {
         }
         let mut errors = 0;
         let mut welcomes = 0;
-        for _ in 0..250 {
+        // дедлайн по времени, а не по числу итераций: на притормозившем
+        // раннере 12 рукопожатий могут занять больше пяти секунд
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
             for r in &rxs {
                 for ev in drain(r) {
                     if let LinkEvent::Message(env) = ev {
