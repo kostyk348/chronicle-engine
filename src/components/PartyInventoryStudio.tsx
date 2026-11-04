@@ -29,7 +29,9 @@ import {
   Feather,
   Info,
   X,
+  Upload,
 } from 'lucide-react';
+import { parseDdbSheet } from '../utils/ddbImport';
 import confetti from 'canvas-confetti';
 import { playSfx } from '../utils/audioSynthesizer';
 
@@ -57,6 +59,12 @@ export const PartyInventoryStudio: React.FC<PartyInventoryStudioProps> = ({
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState<boolean>(false);
   const [isAddSpellModalOpen, setIsAddSpellModalOpen] = useState<boolean>(false);
   const [isCreateHeroModalOpen, setIsCreateHeroModalOpen] = useState<boolean>(false);
+
+  // Импорт листа из D&D Beyond (JSON)
+  const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
+  const [importText, setImportText] = useState<string>('');
+  const [importError, setImportError] = useState<string>('');
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
 
   // New Item Form
   const [newItem, setNewItem] = useState<{
@@ -548,6 +556,20 @@ export const PartyInventoryStudio: React.FC<PartyInventoryStudioProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setImportText('');
+                setImportError('');
+                setImportWarnings([]);
+                setIsImportModalOpen(true);
+                playSfx('dice_roll');
+              }}
+              className="px-3.5 py-2 bg-[#121212] hover:bg-[#1c1c1f] border border-[#27272a] hover:border-[#d4af37]/50 text-[#d4d4d8] font-semibold rounded-xl text-xs flex items-center gap-1.5 transition"
+              title="Вставить JSON-экспорт листа из D&D Beyond"
+            >
+              <Upload className="w-4 h-4 text-[#d4af37]" />
+              <span>Импорт D&amp;D Beyond</span>
+            </button>
             <button
               onClick={() => {
                 setIsCreateHeroModalOpen(true);
@@ -1630,6 +1652,107 @@ export const PartyInventoryStudio: React.FC<PartyInventoryStudioProps> = ({
                 className="px-4 py-2 bg-[#d4af37] hover:bg-[#c49b2f] text-[#0c0c0c] font-bold rounded-xl text-xs shadow-md"
               >
                 Создать персонажа
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Import sheet from D&D Beyond */}
+      {isImportModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+          onClick={() => setIsImportModalOpen(false)}
+        >
+          <div
+            className="bg-[#18181b] border-2 border-[#d4af37]/60 rounded-3xl max-w-xl w-full p-6 space-y-4 shadow-2xl animate-fade-in my-8"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
+              <h3 className="text-base font-bold text-[#f4f4f5] flex items-center gap-2">
+                <Upload className="w-4 h-4 text-[#d4af37]" />
+                <span>Импорт листа из D&amp;D Beyond</span>
+              </h3>
+              <button
+                onClick={() => setIsImportModalOpen(false)}
+                className="text-[#a1a1aa] hover:text-white transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <p className="text-[#a1a1aa]">
+                Вставьте JSON-экспорт персонажа (кнопка экспорта на сайте D&amp;D Beyond) или любой плоский лист
+                <code className="mx-1 px-1.5 py-0.5 bg-[#0c0c0c] rounded text-[#d4af37] font-mono">{'{name, level, hp, ac, str, dex, ...}'}</code>.
+                Модификаторы, бонус мастерства и ячейки заклинаний движок пересчитает сам.
+              </p>
+
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={e => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  const reader = new FileReader();
+                  reader.onload = () => setImportText(String(reader.result ?? ''));
+                  reader.readAsText(f);
+                }}
+                className="w-full bg-[#121212] border border-[#27272a] rounded-xl px-3 py-2 text-[#d4d4d8] file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-[#d4af37] file:text-[#0c0c0c] file:font-bold file:text-xs file:cursor-pointer"
+              />
+
+              <textarea
+                value={importText}
+                onChange={e => setImportText(e.target.value)}
+                rows={9}
+                placeholder='{"name": "Елена", "race": "Человек", "classes": [{"definition": {"name": "Wizard"}, "level": 3}], "baseHitPoints": 16, "armorClass": 12, "stats": [{"id": 1, "value": 8}, ...]}'
+                className="w-full bg-[#0c0c0c] border border-[#27272a] rounded-xl p-3 font-mono text-[11px] text-[#f4f4f5] focus:border-[#d4af37] outline-none resize-y"
+              />
+
+              {importError && (
+                <div className="p-2.5 bg-red-950/40 border border-red-800/60 rounded-xl text-red-300 flex items-start gap-2">
+                  <X className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{importError}</span>
+                </div>
+              )}
+
+              {importWarnings.length > 0 && (
+                <div className="p-2.5 bg-amber-950/30 border border-amber-800/50 rounded-xl text-amber-300 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5"><Info className="w-3.5 h-3.5" /> Что движок додумал:</div>
+                  <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                    {importWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#27272a]">
+              <button
+                onClick={() => setIsImportModalOpen(false)}
+                className="px-4 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-[#f4f4f5] rounded-xl text-xs font-semibold"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={() => {
+                  if (!importText.trim()) {
+                    setImportError('Вставьте JSON или выберите файл экспорта');
+                    return;
+                  }
+                  try {
+                    const { sheet, warnings } = parseDdbSheet(importText);
+                    onAddPartyMember(sheet);
+                    setSelectedHeroId(sheet.id);
+                    setIsImportModalOpen(false);
+                    playSfx('dungeon_intro');
+                  } catch (err) {
+                    setImportError(err instanceof Error ? err.message : String(err));
+                    setImportWarnings([]);
+                  }
+                }}
+                className="px-4 py-2 bg-[#d4af37] hover:bg-[#c49b2f] text-[#0c0c0c] font-bold rounded-xl text-xs shadow-md"
+              >
+                Импортировать
               </button>
             </div>
           </div>

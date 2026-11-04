@@ -10,7 +10,7 @@ book publishing · audio drama — all on your machine, zero clouds.
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/chronicle-engine?sort=semver&color=d4af37&label=version)](https://github.com/kostyk348/chronicle-engine/releases)
 [![CI](https://github.com/kostyk348/chronicle-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/chronicle-engine/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-34%20passing-22c55e)](#-quality-under-a-microscope)
+[![Tests](https://img.shields.io/badge/tests-75%20passing-22c55e)](#-quality-under-a-microscope)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **[Русский](README.md)** · [Download](https://github.com/kostyk348/chronicle-engine/releases) · [CHANGELOG](CHANGELOG.md)
@@ -47,6 +47,10 @@ A five-phase round that is fully deterministic: same intents + same seed produce
 
 Bonus: the Fallback rule — if a ray's target falls in the same round, the shot auto-redirects per a pre-declared rule.
 
+**Cinematic replay.** Every resolved round decomposes into machine-readable events, and the tactical board plays them back: tokens glide across tiles, attack arcs flash between combatants, damage pops as floating numbers, crits burn gold — and crits and deaths shake the whole table with deterministic sparks (same round → same fireworks on every machine). Pause, frame step, ×1–×4 speed, instant skip. XP for slain enemies flows straight into party sheets.
+
+**D&D Beyond import.** Paste a character's JSON export — the parser survives a full DDB dump and a flat `{name, level, hp, ac, str, ...}` sheet, recomputes modifiers/proficiency/spell slots per 5e rules, and honestly reports in warnings everything it had to assume.
+
 ### 🔐 Dice you can believe
 
 Every roll is a commit-reveal:
@@ -69,6 +73,8 @@ One player hosts; everyone else joins over LAN or VPN. The transport is plain TC
 - **The campaign travels as one scroll**: join and receive the whole archive — chapters, bestiary, combat state.
 - **Roster and table chat** — who's online and which actors they run.
 - **Fair rounds via commit-reveal**: intent hashes first, reveals second, canonical checksums last.
+
+- **Live map**: tokens are dragged with the mouse and the position instantly reaches every player as a validated `token_move` message. The master moves any token, a player — only their own; out-of-bounds cells and garbage frames are dropped at the protocol boundary, and echoes never relay.
 
 <img src="docs/link-protocol.svg" alt="Chronicle Link protocol" width="100%"/>
 
@@ -114,8 +120,8 @@ npm run dev           # plain web mode
 
 | Layer | Check | Coverage |
 |---|---|---|
-| TypeScript | 26 tests (Vitest) | WEGO: determinism, phases, crit/fumble, fallback, shield, dodge/help; Link: canonical JSON, commit-reveal, phase machine, anti-cheat |
-| Rust | 8 tests + clippy `-D warnings` | Transport: framing, oversize rejection, commit→reveal relay between two clients, scroll in welcome, duplicate-name suffixing, canonical JSON |
+| TypeScript | 64 tests (Vitest) | WEGO: determinism, phases, crit/fumble, fallback, shield, dodge/help, round events, replay timeline; Link: canonical JSON, commit-reveal, phase machine, anti-cheat, `token_move` validation; D&D Beyond import; particles/shake determinism |
+| Rust | 11 tests + clippy `-D warnings` | Transport: framing, oversize rejection, commit→reveal relay between two clients, scroll in welcome, duplicate-name suffixing, canonical JSON |
 | CI | GitHub Actions | web job (lint → test → build) + rust job (cargo test → clippy); canonical JSON is mirrored by tests on both sides |
 
 ## 📄 License

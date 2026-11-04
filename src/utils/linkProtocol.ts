@@ -90,6 +90,7 @@ export const LINK_KINDS = [
   'dice_commit',
   'dice_reveal',
   'chat',
+  'token_move',
   'ping',
   'bye',
   'error',
@@ -214,4 +215,34 @@ export function upsertOutcome(state: LinkRoundState, outcome: RoundOutcome): Lin
 /** Расхождение коммита и раскрытия — игрок пытался перекинуть дайс. */
 export function cheats(state: LinkRoundState): string[] {
   return state.reveals.filter(r => !r.valid).map(r => r.from);
+}
+
+// ---------------------------------------------------------------- token_move
+
+/** Поле стола 16×12 — границы проверяются на границе протокола. */
+export const TABLE_WIDTH = 16;
+export const TABLE_HEIGHT = 12;
+
+export interface TokenMoveBody {
+  entityId: string;
+  pos: [number, number];
+  round: number;
+}
+
+/**
+ * Валидация token_move: entity_id непустой, pos — целые клетки внутри поля.
+ * Мусор и подделки (сдвиг на -1, кости координатами) отбрасываются молча.
+ */
+export function normalizeTokenMove(body: unknown): TokenMoveBody | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as Record<string, unknown>;
+  const entityId = typeof b.entity_id === 'string' ? b.entity_id : null;
+  if (!entityId) return null;
+  const pos = Array.isArray(b.pos) ? b.pos : null;
+  if (!pos || pos.length !== 2) return null;
+  const [x, y] = pos;
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
+  if (x < 0 || x >= TABLE_WIDTH || y < 0 || y >= TABLE_HEIGHT) return null;
+  const round = typeof b.round === 'number' && Number.isFinite(b.round) ? Math.floor(b.round) : 0;
+  return { entityId, pos: [x, y], round };
 }

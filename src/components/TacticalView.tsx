@@ -46,9 +46,14 @@ import { generateRandomSeed } from '../utils/cryptoDice';
 import { playSfx, speakSpeechText, stopAllSpeech } from '../utils/audioSynthesizer';
 import {
   buildReplayTimeline, applyFrame, fastForward,
+  spawnParticles,
   ReplayFrame, RoundReplayData,
 } from '../utils/roundReplay';
+import { CRYPT_TERRAIN } from '../utils/wegoResolver';
 import { ActiveTab } from './Header';
+
+/** Стены арены по умолчанию — на них нельзя перетащить токен. */
+const WALL_CELLS = new Set(CRYPT_TERRAIN.walls.map(([x, y]) => `${x},${y}`));
 
 interface TacticalViewProps {
   round: number;
@@ -112,6 +117,13 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
   const [replaySpeed, setReplaySpeed] = useState<number>(1);
   const [replayCaption, setReplayCaption] = useState<string>('');
 
+  // Живая карта: перетаскивание токенов (мастер — любые, игрок — только свой)
+  const [drag, setDrag] = useState<{ id: string; pos: [number, number]; moved: boolean } | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  // Джус реплея: тряска стола на критах, смертях и выводе из строя
+  const [shake, setShake] = useState<boolean>(false);
+  const shakeTimerRef = useRef<number | null>(null);
+
   // Roleplay Drawer State
   const [speech, setSpeech] = useState<string>('Пепел к пеплу, тварь! Попробуй это пламя!');
   const [internalThought, setInternalThought] = useState<string>('Лишь бы воин успел прикрыть фланг...');
@@ -143,6 +155,39 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
   const currentFrame: ReplayFrame | null =
     replayOpen && replayIdx > 0 && replayIdx <= replayFrames.length ? replayFrames[replayIdx - 1] : null;
 
+  const startDrag = (ev: React.PointerEvent, ent: Entity) => {
+    if (replayOpen || isPathingMode) return;
+    if (controlMode === 'player' && (ent.actorId || ent.id) !== selectedActorId) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    setDrag({ id: ent.id, pos: ent.pos, moved: false });
+  };
+
+  const handleDragMove = (ev: React.PointerEvent) => {
+    if (!drag || !gridRef.current) return;
+    const rect = gridRef.current.getBoundingClientRect();
+    const cx = Math.max(0, Math.min(15, Math.floor(((ev.clientX - rect.left) / rect.width) * 16)));
+    const cy = Math.max(0, Math.min(11, Math.floor(((ev.clientY - rect.top) / rect.height) * 12)));
+    if (cx !== drag.pos[0] || cy !== drag.pos[1]) setDrag({ ...drag, pos: [cx, cy], moved: true });
+  };
+
+  const finishDrag = () => {
+    if (!drag) return;
+    const ent = viewEntities.find(e => e.id === drag.id);
+    const [tx, ty] = drag.pos;
+    const blocked =
+      WALL_CELLS.has(`${tx},${ty}`) ||
+      viewEntities.some(o => o.id !== drag.id && o.status !== 'Dead' && o.pos[0] === tx && o.pos[1] === ty);
+    if (
+      ent && drag.moved && !blocked &&
+      (tx !== ent.pos[0] || ty !== ent.pos[1])
+    ) {
+      onUpdateEntity?.(drag.id, { pos: [tx, ty] });
+      playSfx('dice_roll');
+    }
+    setDrag(null);
+  };
+
   // Новый разрешённый раунд приехал — открываем кинематографичный реплей
   useEffect(() => {
     if (!lastRound || lastRound.events.length === 0) return;
@@ -172,6 +217,12 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
       setReplayEntities(prev => applyFrame(prev, frame));
       setReplayCaption(frame.caption);
       setReplayIdx(i => i + 1);
+      // встряска стола на критах, смертях и выводе из строя
+      if (frame.burst && frame.burst.intensity >= 2) {
+        if (shakeTimerRef.current) window.clearTimeout(shakeTimerRef.current);
+        setShake(true);
+        shakeTimerRef.current = window.setTimeout(() => setShake(false), 450);
+      }
       playSfx(
         frame.arc?.crit ? 'fire_spell'
           : frame.arc ? 'sword_slash'
@@ -207,7 +258,7 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
   };
 
   const handleCellClick = (x: number, y: number) => {
-    if (replayOpen) return; // во время реплея стол заморожен
+    if (replayOpen || drag) return; // реплей и перетаскивание замораживают прокладку пути
     if (!isPathingMode) {
       // In DM mode, allow moving selected entity to cell
       if (controlMode === 'master' && selectedEntity) {
@@ -371,6 +422,27 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
 
   return (
     <div id="tactical-view-root" className="space-y-6">
+      {/* Анимации реплея: разлёт частиц и тряска стола на критах */}
+      <style>{`
+        @keyframes ce-fly {
+          0% { opacity: 0.95; transform: translate(-50%, -50%) scale(1); }
+          100% { opacity: 0; transform: translate(calc(-50% + var(--ce-dx)), calc(-50% + var(--ce-dy))) scale(0.3); }
+        }
+        .ce-particle {
+          position: absolute; left: 0; top: 0;
+          transform: translate(-50%, -50%);
+          animation: ce-fly 620ms ease-out forwards;
+          pointer-events: none;
+        }
+        @keyframes ce-shake {
+          0%, 100% { transform: translate(0, 0); }
+          20% { transform: translate(-4px, 2px); }
+          40% { transform: translate(4px, -2px); }
+          60% { transform: translate(-3px, -2px); }
+          80% { transform: translate(3px, 2px); }
+        }
+        .ce-shake { animation: ce-shake 0.42s ease-in-out; }
+      `}</style>
       {/* Supreme Command Header Bar */}
       <div className="bg-[#121212] border border-[#27272a] rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4 shadow-xl">
         <div className="flex items-center gap-3">
@@ -518,7 +590,11 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
             {/* Tactical Grid Canvas */}
             <div className="relative overflow-x-auto bg-[#08080a] border border-[#27272a] rounded-xl p-2 select-none">
               <div
-                className="grid grid-cols-16 gap-1 min-w-[640px] aspect-[16/12] p-2 bg-[#0d0d11] rounded-lg relative"
+                ref={gridRef}
+                onPointerMove={handleDragMove}
+                onPointerUp={finishDrag}
+                onPointerLeave={() => setDrag(null)}
+                className={`grid grid-cols-16 gap-1 min-w-[640px] aspect-[16/12] p-2 bg-[#0d0d11] rounded-lg relative ${shake ? 'ce-shake' : ''}`}
                 style={{
                   backgroundImage:
                     'radial-gradient(circle at 60% 40%, rgba(212, 175, 55, 0.08) 0%, transparent 60%), linear-gradient(to right, #1f1f23 1px, transparent 1px), linear-gradient(to bottom, #1f1f23 1px, transparent 1px)',
@@ -597,13 +673,22 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                     const isPathCell = plannedPath.some(([px, py]) => px === x && py === y);
                     const isSelected = selectedEntity && selectedEntity.pos[0] === x && selectedEntity.pos[1] === y;
                     const isAltar = x >= 11 && x <= 13 && y >= 7 && y <= 8;
+                    const isDragCell = !!drag && drag.pos[0] === x && drag.pos[1] === y;
+                    const isDragBlocked =
+                      isDragCell &&
+                      (WALL_CELLS.has(`${x},${y}`) ||
+                        viewEntities.some(o => o.id !== drag!.id && o.status !== 'Dead' && o.pos[0] === x && o.pos[1] === y));
 
                     return (
                       <div
                         key={`${x}-${y}`}
                         onClick={() => handleCellClick(x, y)}
                         className={`relative aspect-square rounded-md border flex items-center justify-center transition cursor-pointer ${
-                          isAltar
+                          isDragCell
+                            ? isDragBlocked
+                              ? 'bg-red-950/70 border-red-500'
+                              : 'bg-sky-500/25 border-sky-400'
+                            : isAltar
                             ? 'bg-stone-800/80 border-stone-600'
                             : isPathCell
                             ? 'bg-[#d4af37]/20 border-[#d4af37]/60 shadow-[inset_0_0_8px_rgba(212,175,55,0.3)]'
@@ -634,24 +719,29 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                 {viewEntities.map(e => {
                   const isDead = e.status === 'Dead';
                   const isReplayActor = replayOpen && currentFrame?.move?.actorId === e.id;
+                  const isDragged = drag?.id === e.id;
+                  const pos = isDragged ? drag!.pos : e.pos;
+                  const dragAllowed = !replayOpen && !isPathingMode &&
+                    (controlMode === 'master' || (e.actorId || e.id) === selectedActorId);
                   return (
                     <div
                       key={e.id}
                       className="absolute z-20 pointer-events-none"
                       style={{
-                        left: `${((e.pos[0] + 0.5) / 16) * 100}%`,
-                        top: `${((e.pos[1] + 0.5) / 12) * 100}%`,
-                        transition: 'left 480ms ease-out, top 480ms ease-out',
+                        left: `${((pos[0] + 0.5) / 16) * 100}%`,
+                        top: `${((pos[1] + 0.5) / 12) * 100}%`,
+                        transition: isDragged ? 'none' : 'left 480ms ease-out, top 480ms ease-out',
                       }}
                     >
                       <div
                         onClick={(ev) => {
                           ev.stopPropagation();
-                          if (replayOpen) return;
+                          if (replayOpen || drag?.moved) return;
                           setSelectedActorId(e.actorId || e.id);
                           playSfx('dice_roll');
                         }}
-                        className={`-translate-x-1/2 -translate-y-1/2 w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold text-[10px] text-white shadow-lg transition-transform hover:scale-110 cursor-pointer pointer-events-auto ${
+                        onPointerDown={(ev) => startDrag(ev, e)}
+                        className={`-translate-x-1/2 -translate-y-1/2 w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold text-[10px] text-white shadow-lg transition-transform hover:scale-110 pointer-events-auto ${
                           isDead
                             ? 'bg-stone-700 opacity-40 border border-stone-600'
                             : e.role === 'player'
@@ -659,8 +749,10 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                             : e.role === 'npc'
                             ? 'bg-emerald-600 ring-2 ring-emerald-400'
                             : 'bg-red-600 ring-2 ring-red-400'
-                        } ${isReplayActor ? 'scale-125 shadow-[0_0_18px_rgba(212,175,55,0.95)] ring-[#d4af37]' : ''}`}
-                        title={`${e.name} (${e.hp}/${e.maxHp} HP)`}
+                        } ${isReplayActor ? 'scale-125 shadow-[0_0_18px_rgba(212,175,55,0.95)] ring-[#d4af37]' : ''} ${
+                          isDragged ? 'scale-110 ring-2 ring-sky-400 opacity-85 cursor-grabbing' : ''
+                        } ${dragAllowed ? 'cursor-grab' : 'cursor-pointer'}`}
+                        title={`${e.name} (${e.hp}/${e.maxHp} HP)${dragAllowed ? ' — потяните, чтобы переместить' : ''}`}
                       >
                         {isDead ? (
                           <Skull className="w-3.5 h-3.5 text-stone-300" />
@@ -695,6 +787,41 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                       <div className={`-translate-x-1/2 -translate-y-[230%] text-sm font-black whitespace-nowrap drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)] ${toneCls}`}>
                         {p.text}
                       </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Всплеск частиц: крит и урон рвутся искрами из цели (детерминированный) */}
+                {replayOpen && currentFrame?.burst && (() => {
+                  const b = currentFrame.burst;
+                  const ent = viewEntities.find(e => e.id === b.entityId);
+                  if (!ent) return null;
+                  const particles = spawnParticles(currentFrame.eventIndex + 1, b.intensity);
+                  const color = b.intensity >= 2 ? '#fbbf24' : '#f87171';
+                  return (
+                    <div
+                      key={`burst-${currentFrame.eventIndex}`}
+                      className="absolute z-30 pointer-events-none"
+                      style={{
+                        left: `${((ent.pos[0] + 0.5) / 16) * 100}%`,
+                        top: `${((ent.pos[1] + 0.5) / 12) * 100}%`,
+                      }}
+                    >
+                      {particles.map((pt, i) => (
+                        <span
+                          key={i}
+                          className="ce-particle rounded-full"
+                          style={{
+                            width: pt.size,
+                            height: pt.size,
+                            background: color,
+                            boxShadow: `0 0 6px ${color}`,
+                            '--ce-dx': `${pt.dx}px`,
+                            '--ce-dy': `${pt.dy}px`,
+                            animationDelay: `${pt.delay}ms`,
+                          } as React.CSSProperties}
+                        />
+                      ))}
                     </div>
                   );
                 })()}

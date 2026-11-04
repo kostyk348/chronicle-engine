@@ -20,6 +20,7 @@ import {
 import {
   commitIntent, upsertCommit, upsertOutcome,
   newRoundState, upsertReveal, LinkRoundState, cheats as findCheats,
+  normalizeTokenMove,
 } from '../utils/linkProtocol';
 import {
   parseFormula, seedToRng, rollDice, diceCommit, verifyDiceReveal,
@@ -44,6 +45,8 @@ interface NetworkLobbyProps {
   onApplyScroll: (text: string) => void;
   /** применить канон раунда (сущности + журнал) к локальной кампании */
   onApplyCanon: (canon: CanonState) => void;
+  /** чужой token_move: сдвинуть токен на живой карте без карточки канона */
+  onRemoteTokenMove: (entityId: string, pos: [number, number]) => void;
 }
 
 interface LogLine {
@@ -57,7 +60,7 @@ function nowStamp(): string {
 }
 
 const NetworkLobby: React.FC<NetworkLobbyProps> = ({
-  round, entities, campaignScroll, mechanicalLogs, onApplyScroll, onApplyCanon,
+  round, entities, campaignScroll, mechanicalLogs, onApplyScroll, onApplyCanon, onRemoteTokenMove,
 }) => {
   const [isDesktop, setIsDesktop] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -83,6 +86,37 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({
   /** свои нераскрытые броски: сид и результат не видны столу до раскрытия */
   const mySecretRolls = useRef<Map<string, { label: string; commit: string; total: number; detail: string; seed: string }>>(new Map());
   const logRef = useRef<HTMLDivElement>(null);
+
+  // --- живая карта: token_move ---------------------------------------------
+  /** последняя известная столу позиция токена ("x,y") — чтобы не ретранслировать эхо */
+  const sentTokenPositions = useRef<Record<string, string>>({});
+  const prevEntitiesRef = useRef<Entity[]>(entities);
+  const remoteMoveRef = useRef(onRemoteTokenMove);
+  useEffect(() => {
+    remoteMoveRef.current = onRemoteTokenMove;
+  }, [onRemoteTokenMove]);
+
+  // Локальные сдвиги токенов уезжают в стол (drag в тактике меняет entities).
+  // Массовые изменения (>4 сущностей) — это применённый канон/свиток, не drag:
+  // их позиции уже уехали в round_result, дублировать token_move не нужно.
+  useEffect(() => {
+    const prev = prevEntitiesRef.current;
+    prevEntitiesRef.current = entities;
+    if (!connected) return;
+    const changed: { id: string; pos: [number, number]; key: string }[] = [];
+    for (const e of entities) {
+      const was = prev.find(p => p.id === e.id);
+      if (!was || (was.pos[0] === e.pos[0] && was.pos[1] === e.pos[1])) continue;
+      const key = `${e.pos[0]},${e.pos[1]}`;
+      if (sentTokenPositions.current[e.id] === key) continue; // чужой token_move — уже применён
+      changed.push({ id: e.id, pos: e.pos, key });
+    }
+    for (const c of changed) sentTokenPositions.current[c.id] = c.key;
+    if (changed.length === 0 || changed.length > 4) return;
+    for (const c of changed) {
+      void linkSend('token_move', { entity_id: c.id, pos: c.pos, round }).catch(() => {});
+    }
+  }, [entities, connected, round]);
 
   const push = useCallback((text: string, tone: LogLine['tone'] = 'info') => {
     setLog(prev => [...prev.slice(-200), { at: nowStamp(), text, tone }]);
@@ -111,6 +145,15 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({
       if (env.from === myName) return;
       const body = env.body as { text?: string };
       push(`${env.from}: ${body.text ?? ''}`, 'chat');
+      return;
+    }
+    if (env.kind === 'token_move') {
+      const mv = normalizeTokenMove(env.body);
+      if (!mv || env.from === myName) return;
+      // запоминаем позицию до применения — рассыльщик увидит её как эхо и смолчит
+      sentTokenPositions.current[mv.entityId] = `${mv.pos[0]},${mv.pos[1]}`;
+      remoteMoveRef.current(mv.entityId, mv.pos);
+      push(`🧲 ${env.from} подввинул токен: [${mv.pos[0]},${mv.pos[1]}]`, 'info');
       return;
     }
     if (env.kind === 'error') {

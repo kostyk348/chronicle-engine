@@ -671,6 +671,10 @@ export default function App() {
               if (Array.isArray(canon.logs) && canon.logs.length > 0) setMechanicalLogs(canon.logs);
               playSfx('shield_block');
             }}
+            onRemoteTokenMove={(entityId, pos) => {
+              // живая карта: чужой drag сдвигает токен сразу, без карточки канона
+              setEntities(prev => prev.map(e => (e.id === entityId ? { ...e, pos } : e)));
+            }}
           />
         )}
       </main>
