@@ -409,7 +409,7 @@ fn spawn_host_peer(mut stream: TcpStream, ctx: HostCtx, shared: SharedState, eve
             while s.peers.contains_key(&name) {
                 name = format!("{name}~");
             }
-            s.peers.insert(name.clone(), out_tx);
+            s.peers.insert(name.clone(), out_tx.clone());
             s.players.push(PlayerInfo {
                 name: name.clone(),
                 actors: hello.actors.clone(),
