@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Entity,
+  MapMarker,
   PlayerIntentPayload,
   RoleplayPayload,
   EmotionType,
@@ -71,6 +72,10 @@ interface TacticalViewProps {
   onRemoveEntity?: (id: string) => void;
   onResetCombat?: () => void;
   onNavigateToTab?: (tab: ActiveTab) => void;
+  /** пометки Мастера на живой карте — общий слой всех столов */
+  markers?: MapMarker[];
+  /** Alt+клик по клетке / клик по булавке — поставить или снять пометку */
+  onToggleMarker?: (pos: [number, number]) => void;
 }
 
 export const TacticalView: React.FC<TacticalViewProps> = ({
@@ -88,6 +93,8 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
   onRemoveEntity,
   onResetCombat,
   onNavigateToTab,
+  markers = [],
+  onToggleMarker,
 }) => {
   const [controlMode, setControlMode] = useState<'player' | 'master'>('master');
   const [selectedActorId, setSelectedActorId] = useState<string>('char_wizard_elena');
@@ -257,9 +264,14 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
     onReplayDismiss?.();
   };
 
-  const handleCellClick = (x: number, y: number) => {
+  const handleCellClick = (x: number, y: number, alt = false) => {
     if (replayOpen || drag) return; // реплей и перетаскивание замораживают прокладку пути
     if (!isPathingMode) {
+      // Alt+клик Мастера — поставить/снять пометку на живой карте
+      if (controlMode === 'master' && alt) {
+        onToggleMarker?.([x, y]);
+        return;
+      }
       // In DM mode, allow moving selected entity to cell
       if (controlMode === 'master' && selectedEntity) {
         onUpdateEntity?.(selectedEntity.id, { pos: [x, y] });
@@ -562,6 +574,8 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                 </span>
                 <span className="text-[#71717a]">•</span>
                 <span className="text-[#d4af37] font-mono">1 клетка = 5 футов (1.5м)</span>
+                <span className="text-[#71717a]">•</span>
+                <span className="text-[#a1a1aa] hidden lg:inline">Alt+клик — 📍 пометка Мастера</span>
               </div>
 
               <div className="flex items-center gap-2">
@@ -682,7 +696,7 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                     return (
                       <div
                         key={`${x}-${y}`}
-                        onClick={() => handleCellClick(x, y)}
+                        onClick={(ev) => handleCellClick(x, y, ev.altKey)}
                         className={`relative aspect-square rounded-md border flex items-center justify-center transition cursor-pointer ${
                           isDragCell
                             ? isDragBlocked
@@ -714,6 +728,33 @@ export const TacticalView: React.FC<TacticalViewProps> = ({
                     );
                   })
                 )}
+
+                {/* Marker Layer — пометки Мастера, общий для всех столов */}
+                {markers.map(mk => (
+                  <div
+                    key={mk.id}
+                    className="absolute z-[15] pointer-events-auto cursor-pointer"
+                    style={{
+                      left: `${((mk.pos[0] + 0.5) / 16) * 100}%`,
+                      top: `${((mk.pos[1] + 0.5) / 12) * 100}%`,
+                      transition: 'left 300ms ease-out, top 300ms ease-out',
+                    }}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      if (controlMode === 'master') onToggleMarker?.(mk.pos);
+                    }}
+                    title={`${mk.label || 'Пометка Мастера'}${mk.by ? ` (${mk.by})` : ''} — клик снимет`}
+                  >
+                    <div className="-translate-x-1/2 -translate-y-1/2 flex flex-col items-center drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]">
+                      <span className="text-base leading-none animate-pulse">📍</span>
+                      {mk.label && (
+                        <span className="mt-0.5 px-1.5 py-0.5 rounded-md bg-[#0c0c0c]/85 border border-[#d4af37]/50 text-[9px] font-bold text-[#d4af37] whitespace-nowrap max-w-[110px] truncate">
+                          {mk.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
 
                 {/* Token Layer — абсолютные токены: движение анимируется CSS-переходом */}
                 {viewEntities.map(e => {

@@ -32,6 +32,16 @@ export interface Entity {
   xpValue?: number;
 }
 
+/** Пометка Мастера на живой карте (клик по пустой клетке в режиме Мастера). */
+export interface MapMarker {
+  id: string;
+  pos: [number, number];
+  /** короткая подпись; пустая строка — просто булавка */
+  label: string;
+  /** имя стола, поставившего пометку */
+  by: string;
+}
+
 export interface WeaponSpec {
   name: string;
   /** legacy free-form damage text; the engine prefers damageDice */

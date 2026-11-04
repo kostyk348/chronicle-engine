@@ -47,7 +47,7 @@ A five-phase round that is fully deterministic: same intents + same seed produce
 
 Bonus: the Fallback rule — if a ray's target falls in the same round, the shot auto-redirects per a pre-declared rule.
 
-**Cinematic replay.** Every resolved round decomposes into machine-readable events, and the tactical board plays them back: tokens glide across tiles, attack arcs flash between combatants, damage pops as floating numbers, crits burn gold — and crits and deaths shake the whole table with deterministic sparks (same round → same fireworks on every machine). Pause, frame step, ×1–×4 speed, instant skip. XP for slain enemies flows straight into party sheets.
+**Cinematic replay.** Every resolved round decomposes into machine-readable events, and the tactical board plays them back: tokens glide across tiles, attack arcs flash between combatants, damage pops as floating numbers, crits burn gold — and crits and deaths shake the whole table with deterministic sparks (same round → same fireworks on every machine). Pause, frame step, ×1–×4 speed, instant skip. Master pins (`Alt+click`) place labeled markers on a shared map layer — place one at your table and every table sees it. XP for slain enemies flows straight into party sheets.
 
 **D&D Beyond import.** Paste a character's JSON export — the parser survives a full DDB dump and a flat `{name, level, hp, ac, str, ...}` sheet, recomputes modifiers/proficiency/spell slots per 5e rules, and honestly reports in warnings everything it had to assume.
 
@@ -120,7 +120,7 @@ npm run dev           # plain web mode
 
 | Layer | Check | Coverage |
 |---|---|---|
-| TypeScript | 64 tests (Vitest) | WEGO: determinism, phases, crit/fumble, fallback, shield, dodge/help, round events, replay timeline; Link: canonical JSON, commit-reveal, phase machine, anti-cheat, `token_move` validation; D&D Beyond import; particles/shake determinism |
+| TypeScript | 69 tests (Vitest) | WEGO: determinism, phases, crit/fumble, fallback, shield, dodge/help, round events, replay timeline; Link: canonical JSON, commit-reveal, phase machine, anti-cheat, `token_move` validation; D&D Beyond import; particles/shake determinism |
 | Rust | 11 tests + clippy `-D warnings` | Transport: framing, oversize rejection, commit→reveal relay between two clients, scroll in welcome, duplicate-name suffixing, canonical JSON |
 | CI | GitHub Actions | web job (lint → test → build) + rust job (cargo test → clippy); canonical JSON is mirrored by tests on both sides |
 

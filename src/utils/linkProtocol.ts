@@ -91,6 +91,7 @@ export const LINK_KINDS = [
   'dice_reveal',
   'chat',
   'token_move',
+  'marker',
   'ping',
   'bye',
   'error',
@@ -245,4 +246,35 @@ export function normalizeTokenMove(body: unknown): TokenMoveBody | null {
   if (x < 0 || x >= TABLE_WIDTH || y < 0 || y >= TABLE_HEIGHT) return null;
   const round = typeof b.round === 'number' && Number.isFinite(b.round) ? Math.floor(b.round) : 0;
   return { entityId, pos: [x, y], round };
+}
+
+// ---------------------------------------------------------------- marker
+
+/** Максимальная длина подписи пометки — длинное режется, а не отвергается. */
+const MARKER_LABEL_MAX = 24;
+
+export interface MarkerBody {
+  action: 'add' | 'remove';
+  markerId: string;
+  pos: [number, number];
+  label: string;
+}
+
+/**
+ * Валидация marker: action add/remove, непустой markerId, клетка в поле.
+ * Подпись опциональна и жёстко ограничена — длинные строки не сломают UI.
+ */
+export function normalizeMarker(body: unknown): MarkerBody | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as Record<string, unknown>;
+  if (b.action !== 'add' && b.action !== 'remove') return null;
+  const markerId = typeof b.marker_id === 'string' && b.marker_id.length > 0 ? b.marker_id : null;
+  if (!markerId) return null;
+  const pos = Array.isArray(b.pos) ? b.pos : null;
+  if (!pos || pos.length !== 2) return null;
+  const [x, y] = pos;
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
+  if (x < 0 || x >= TABLE_WIDTH || y < 0 || y >= TABLE_HEIGHT) return null;
+  const label = typeof b.label === 'string' ? b.label.slice(0, MARKER_LABEL_MAX) : '';
+  return { action: b.action, markerId, pos: [x, y], label };
 }

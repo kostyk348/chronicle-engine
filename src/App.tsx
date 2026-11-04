@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Entity,
+  MapMarker,
   EmlMessage,
   Chapter,
   BestiaryEntry,
@@ -60,6 +61,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('tactical');
   const [currentRound, setCurrentRound] = useState<number>(3);
   const [entities, setEntities] = useState<Entity[]>(INITIAL_ENTITIES);
+  // Пометки Мастера на живой карте — общий слой всех столов (вид marker)
+  const [mapMarkers, setMapMarkers] = useState<MapMarker[]>([]);
   const [emlVault, setEmlVault] = useState<EmlMessage[]>(INITIAL_EML_VAULT);
   const [chapters, setChapters] = useState<Chapter[]>(INITIAL_CHAPTERS);
   const [bestiary, setBestiary] = useState<BestiaryEntry[]>(INITIAL_BESTIARY);
@@ -357,6 +360,27 @@ export default function App() {
     );
   };
 
+  // Пометка Мастера: клик по занятой булавкой клетке снимает её, по пустой — ставит
+  const handleToggleMarker = (pos: [number, number]) => {
+    setMapMarkers(prev => {
+      const existing = prev.find(m => m.pos[0] === pos[0] && m.pos[1] === pos[1]);
+      if (existing) {
+        playSfx('dice_roll');
+        return prev.filter(m => m.id !== existing.id);
+      }
+      playSfx('shield_block');
+      return [
+        ...prev,
+        {
+          id: `mk_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          pos,
+          label: '',
+          by: '',
+        },
+      ];
+    });
+  };
+
   const handleAddEntity = (newEntity: Entity) => {
     setEntities(prev => [...prev, newEntity]);
     playSfx('shield_block');
@@ -591,6 +615,8 @@ export default function App() {
             onRemoveEntity={handleRemoveEntity}
             onResetCombat={handleResetCombat}
             onNavigateToTab={setActiveTab}
+            markers={mapMarkers}
+            onToggleMarker={handleToggleMarker}
           />
         )}
 
@@ -655,6 +681,7 @@ export default function App() {
           <NetworkLobby
             round={currentRound}
             entities={entities}
+            markers={mapMarkers}
             campaignScroll={JSON.stringify(buildCampaignSnapshot())}
             mechanicalLogs={mechanicalLogs}
             onApplyScroll={(text) => {
@@ -674,6 +701,16 @@ export default function App() {
             onRemoteTokenMove={(entityId, pos) => {
               // живая карта: чужой drag сдвигает токен сразу, без карточки канона
               setEntities(prev => prev.map(e => (e.id === entityId ? { ...e, pos } : e)));
+            }}
+            onRemoteMarker={(m) => {
+              // общий слой пометок: чужая булавка появляется/исчезает сразу
+              setMapMarkers(prev =>
+                m.action === 'add'
+                  ? prev.some(x => x.id === m.markerId)
+                    ? prev
+                    : [...prev, { id: m.markerId, pos: m.pos, label: m.label, by: m.from }]
+                  : prev.filter(x => x.id !== m.markerId)
+              );
             }}
           />
         )}

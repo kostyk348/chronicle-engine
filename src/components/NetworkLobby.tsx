@@ -20,7 +20,7 @@ import {
 import {
   commitIntent, upsertCommit, upsertOutcome,
   newRoundState, upsertReveal, LinkRoundState, cheats as findCheats,
-  normalizeTokenMove,
+  normalizeTokenMove, normalizeMarker,
 } from '../utils/linkProtocol';
 import {
   parseFormula, seedToRng, rollDice, diceCommit, verifyDiceReveal,
@@ -28,7 +28,7 @@ import {
 } from '../utils/diceEngine';
 import { diffCanon, CanonState, CanonEntity } from '../utils/canonSync';
 import { generateRandomSeed } from '../utils/cryptoDice';
-import { Entity } from '../types/chronicle';
+import { Entity, MapMarker } from '../types/chronicle';
 
 const TOKEN_COLORS = ['#8b5cf6', '#3b82f6', '#22c55e', '#f97316', '#ec4899', '#14b8a6'];
 
@@ -37,6 +37,8 @@ const DICE_PRESETS = ['d20', 'd100', '2d6+3', '4d6kh3', '2d20kl1'];
 interface NetworkLobbyProps {
   round: number;
   entities: Entity[];
+  /** пометки Мастера на живой карте — общий слой всех столов */
+  markers: MapMarker[];
   /** сериализованный снапшот кампании — уедет игрокам в welcome */
   campaignScroll: string;
   /** строки журнала боя — уедут игрокам в каноне раунда */
@@ -47,6 +49,8 @@ interface NetworkLobbyProps {
   onApplyCanon: (canon: CanonState) => void;
   /** чужой token_move: сдвинуть токен на живой карте без карточки канона */
   onRemoteTokenMove: (entityId: string, pos: [number, number]) => void;
+  /** чужая пометка: поставить или снять булавку по marker_id */
+  onRemoteMarker: (m: { action: 'add' | 'remove'; markerId: string; pos: [number, number]; label: string; from: string }) => void;
 }
 
 interface LogLine {
@@ -60,7 +64,8 @@ function nowStamp(): string {
 }
 
 const NetworkLobby: React.FC<NetworkLobbyProps> = ({
-  round, entities, campaignScroll, mechanicalLogs, onApplyScroll, onApplyCanon, onRemoteTokenMove,
+  round, entities, markers, campaignScroll, mechanicalLogs,
+  onApplyScroll, onApplyCanon, onRemoteTokenMove, onRemoteMarker,
 }) => {
   const [isDesktop, setIsDesktop] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -95,6 +100,36 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({
   useEffect(() => {
     remoteMoveRef.current = onRemoteTokenMove;
   }, [onRemoteTokenMove]);
+
+  // --- пометки Мастера: marker ---------------------------------------------
+  /** что уже уехало в стол: markerId → 'removed' | "x,y|label" */
+  const sentMarkerKeys = useRef<Record<string, string>>({});
+  const prevMarkersRef = useRef<MapMarker[]>(markers);
+  const remoteMarkerRef = useRef(onRemoteMarker);
+  useEffect(() => {
+    remoteMarkerRef.current = onRemoteMarker;
+  }, [onRemoteMarker]);
+
+  // Локальные постановки/снятия булавок уезжают в стол. Пометки не двигаются,
+  // поэтому diff простой: новые id — add, исчезнувшие — remove.
+  useEffect(() => {
+    const prev = prevMarkersRef.current;
+    prevMarkersRef.current = markers;
+    if (!connected) return;
+    for (const m of markers) {
+      if (prev.some(p => p.id === m.id)) continue;
+      const key = `${m.pos[0]},${m.pos[1]}|${m.label}`;
+      if (sentMarkerKeys.current[m.id] === key) continue; // эхо чужой пометки
+      sentMarkerKeys.current[m.id] = key;
+      void linkSend('marker', { action: 'add', marker_id: m.id, pos: m.pos, label: m.label }).catch(() => {});
+    }
+    for (const p of prev) {
+      if (markers.some(m => m.id === p.id)) continue;
+      if (sentMarkerKeys.current[p.id] === 'removed') continue;
+      sentMarkerKeys.current[p.id] = 'removed';
+      void linkSend('marker', { action: 'remove', marker_id: p.id, pos: p.pos, label: '' }).catch(() => {});
+    }
+  }, [markers, connected]);
 
   // Локальные сдвиги токенов уезжают в стол (drag в тактике меняет entities).
   // Массовые изменения (>4 сущностей) — это применённый канон/свиток, не drag:
@@ -154,6 +189,15 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({
       sentTokenPositions.current[mv.entityId] = `${mv.pos[0]},${mv.pos[1]}`;
       remoteMoveRef.current(mv.entityId, mv.pos);
       push(`🧲 ${env.from} подввинул токен: [${mv.pos[0]},${mv.pos[1]}]`, 'info');
+      return;
+    }
+    if (env.kind === 'marker') {
+      const mk = normalizeMarker(env.body);
+      if (!mk || env.from === myName) return;
+      // запоминаем до применения — рассыльщик увидит это как эхо и смолчит
+      sentMarkerKeys.current[mk.markerId] = mk.action === 'remove' ? 'removed' : `${mk.pos[0]},${mk.pos[1]}|${mk.label}`;
+      remoteMarkerRef.current({ ...mk, from: env.from });
+      push(mk.action === 'add' ? `📍 ${env.from} поставил пометку [${mk.pos[0]},${mk.pos[1]}]` : `📍 ${env.from} снял пометку`, 'info');
       return;
     }
     if (env.kind === 'error') {
