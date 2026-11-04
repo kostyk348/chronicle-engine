@@ -26,6 +26,20 @@ use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Верхний предел игроков за одним столом: на 13-м хост отвечает error-кадром.
+pub const MAX_PEERS: usize = 12;
+
+/// Раз в N секунд — ping, чтобы мёртвые соединения отваливались, а не висели.
+pub const KEEPALIVE_SECS: u64 = 15;
+
+/// IP хоста в локальной сети — чтобы игрокам можно было скопировать адрес.
+/// UDP-«connect» пакетов не шлёт: только выбирает маршрут, как настоящий клиент.
+fn local_lan_ip() -> Option<String> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("8.8.8.8:80").ok()?;
+    s.local_addr().ok().map(|a| a.ip().to_string())
+}
+
 // ------------------------------------------------------------------ protocol
 
 /// Кадр = u32 big-endian длины + полезная нагрузка. Верхний предел 16 МБ —
@@ -174,29 +188,70 @@ fn roster(players: &[PlayerInfo]) -> LinkEvent {
     LinkEvent::Roster(players.to_vec())
 }
 
-/// Каждые N секунд — ping, чтобы мёртвые соединения отваливались, а не висели.
-fn start_keepalive(shared: SharedState, closed: Arc<AtomicBool>) {
+/// Каждые KEEPALIVE_SECS — ping; молчаливо отвалившийся пир (кабель выдернули,
+/// FIN не пришёл) вычищается из стола, когда канал исходящих умирает.
+fn start_keepalive(shared: SharedState, closed: Arc<AtomicBool>, events_tx: Sender<LinkEvent>) {
+    start_keepalive_with(shared, closed, events_tx, Duration::from_secs(KEEPALIVE_SECS));
+}
+
+fn start_keepalive_with(
+    shared: SharedState,
+    closed: Arc<AtomicBool>,
+    events_tx: Sender<LinkEvent>,
+    interval: Duration,
+) {
     std::thread::spawn(move || {
         while !closed.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_secs(15));
+            std::thread::sleep(interval);
             let ping = Envelope::new("ping", "system", 0, serde_json::json!({}))
                 .to_frame()
                 .unwrap_or_default();
-            let mut peers = match shared.lock() {
+            let peers = match shared.lock() {
                 Ok(s) => s.peers.clone(),
                 Err(_) => continue,
             };
-            for (_name, out) in peers.drain() {
-                let _ = out.send(ping.clone());
+            for (name, out) in peers {
+                if out.send(ping.clone()).is_err() {
+                    // получатель закрыт: пир исчез без прощания — убираем со стола
+                    remove_peer(&shared, &name, &events_tx);
+                }
             }
         }
     });
+}
+
+/// Убрать пира со стола и разослать обновлённый ростер.
+/// Идемпотентно: и читающий поток пира, и keepalive могут вызвать это.
+fn remove_peer(shared: &SharedState, name: &str, events_tx: &Sender<LinkEvent>) {
+    if let Ok(mut s) = shared.lock() {
+        let existed = s.peers.remove(name).is_some();
+        if existed {
+            s.players.retain(|p| p.name != name);
+            let players = s.players.clone();
+            let roster_env = Envelope::new(
+                "roster",
+                "host",
+                0,
+                serde_json::to_value(&players).unwrap_or_default(),
+            )
+            .to_frame()
+            .unwrap_or_default();
+            for out in s.peers.values() {
+                let _ = out.send(roster_env.clone());
+            }
+            push_event(events_tx, roster(&players));
+            push_event(events_tx, LinkEvent::Notice(format!("{name} покинул стол")));
+        }
+    }
 }
 
 // ------------------------------------------------------------------ host
 
 pub struct HostHandle {
     pub port: u16,
+    /// IP хоста в локальной сети (для приглашения игроков); None — офлайн/неизвестен.
+    pub local_ip: Option<String>,
+    host_name: String,
     closed: Arc<AtomicBool>,
     shared: SharedState,
     seq: Arc<AtomicU64>,
@@ -205,9 +260,10 @@ pub struct HostHandle {
 
 impl HostHandle {
     /// Рассылка от имени хоста (ростер, служебные, chat мастера).
+    /// from — настоящее имя хоста: у игроков в чате виден «Мастер», а не безликий «host».
     pub fn broadcast(&self, kind: &str, body: serde_json::Value) -> Result<(), String> {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let env = Envelope::new(kind, "host", seq, body);
+        let env = Envelope::new(kind, &self.host_name, seq, body);
         let frame = env.to_frame()?;
         let shared = self.shared.lock().map_err(|_| "poisoned")?;
         for out in shared.peers.values() {
@@ -263,7 +319,7 @@ pub fn run_host(
         let closed = closed.clone();
         let events_tx = events_tx.clone();
         std::thread::spawn(move || {
-            start_keepalive(shared.clone(), closed.clone());
+            start_keepalive(shared.clone(), closed.clone(), events_tx.clone());
             for conn in listener.incoming() {
                 if closed.load(Ordering::SeqCst) {
                     break;
@@ -280,6 +336,8 @@ pub fn run_host(
 
     Ok(HostHandle {
         port,
+        local_ip: local_lan_ip(),
+        host_name: host_name.to_string(),
         closed,
         shared,
         seq: Arc::new(AtomicU64::new(1)),
@@ -325,19 +383,43 @@ fn spawn_host_peer(mut stream: TcpStream, ctx: HostCtx, shared: SharedState, eve
             );
             return Some(());
         }
-        let mut name = hello.name.clone();
-        {
-            let s = shared.lock().ok()?;
-            while s.peers.contains_key(&name) {
-                name = format!("{name}~");
-            }
-        }
 
         // 2) канал исходящих для этого пира
         let (out_tx, out_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+        // 3) регистрация — атомарно: дедуп имени, лимит стола и вставка под одним
+        //    локом (иначе два «Елены» одновременно пройдут проверку и затрут друг друга)
+        let (name, players, campaign) = {
+            let mut s = shared.lock().ok()?;
+            if s.peers.len() >= MAX_PEERS {
+                let _ = write_frame(
+                    &mut stream,
+                    &Envelope::new(
+                        "error",
+                        "host",
+                        0,
+                        serde_json::json!({"text": format!("table full: max {} players", MAX_PEERS)}),
+                    )
+                    .to_frame()
+                    .unwrap_or_default(),
+                );
+                return Some(());
+            }
+            let mut name = hello.name.clone();
+            while s.peers.contains_key(&name) {
+                name = format!("{name}~");
+            }
+            s.peers.insert(name.clone(), out_tx);
+            s.players.push(PlayerInfo {
+                name: name.clone(),
+                actors: hello.actors.clone(),
+                is_host: false,
+            });
+            (name, s.players.clone(), ctx.campaign_eml.clone())
+        };
         let writer_stream = match stream.try_clone() {
             Ok(s) => s,
-            Err(_) => return Some(()),
+            Err(_) => return cleanup_host_peer(&shared, &name, &events_tx),
         };
         std::thread::spawn(move || {
             let mut w = writer_stream;
@@ -348,32 +430,22 @@ fn spawn_host_peer(mut stream: TcpStream, ctx: HostCtx, shared: SharedState, eve
             }
         });
 
-        // 3) welcome + регистрация
-        let (players, campaign) = {
-            let mut s = shared.lock().ok()?;
-            s.peers.insert(name.clone(), out_tx);
-            s.players.push(PlayerInfo {
-                name: name.clone(),
-                actors: hello.actors.clone(),
-                is_host: false,
-            });
-            (s.players.clone(), ctx.campaign_eml.clone())
-        };
+        // 4) welcome + ростер всем
         let welcome = Welcome {
             table: ctx.table.clone(),
             master_seed_commit: ctx.master_seed_commit.clone(),
             campaign_eml: campaign,
             players: players.clone(),
         };
-        if write_frame(
+        let welcome_ok = write_frame(
             &mut stream,
             &Envelope::new("welcome", "host", 0, serde_json::to_value(&welcome).unwrap_or_default())
                 .to_frame()
                 .unwrap_or_default(),
         )
-        .is_err()
-        {
-            return Some(());
+        .is_ok();
+        if !welcome_ok {
+            return cleanup_host_peer(&shared, &name, &events_tx);
         }
         push_event(&events_tx, roster(&players));
         // ростер — всем: остальные столы должны видеть, что пришёл новый игрок
@@ -401,7 +473,7 @@ fn spawn_host_peer(mut stream: TcpStream, ctx: HostCtx, shared: SharedState, eve
             LinkEvent::Notice(format!("{name} присоединился к столу ({peer_addr})")),
         );
 
-        // 4) relay: всё от пира — остальным + в UI
+        // 5) relay: всё от пира — остальным + в UI
         while let Ok(Some(frame)) = read_frame(&mut reader) {
             if let Ok(env) = Envelope::from_frame(&frame) {
                 // ping от system не релеим и не показываем
@@ -425,27 +497,16 @@ fn spawn_host_peer(mut stream: TcpStream, ctx: HostCtx, shared: SharedState, eve
             }
         }
 
-        // 5) пир ушёл
-        if let Ok(mut s) = shared.lock() {
-            s.peers.remove(&name);
-            s.players.retain(|p| p.name != name);
-            let players = s.players.clone();
-            let roster_env = Envelope::new(
-                "roster",
-                "host",
-                0,
-                serde_json::to_value(&players).unwrap_or_default(),
-            )
-            .to_frame()
-            .unwrap_or_default();
-            for out in s.peers.values() {
-                let _ = out.send(roster_env.clone());
-            }
-            push_event(&events_tx, roster(&players));
-        }
-        push_event(&events_tx, LinkEvent::Notice(format!("{name} покинул стол")));
-        Some(())
+        // 6) пир ушёл — убираем со стола (идемпотентно с keepalive)
+        cleanup_host_peer(&shared, &name, &events_tx)
     });
+}
+
+/// Снять пира со стола и сообщить остальным. Пир мог уже быть вычищен
+/// keepalive'ом или другой веткой — тогда ничего не делает.
+fn cleanup_host_peer(shared: &SharedState, name: &str, events_tx: &Sender<LinkEvent>) -> Option<()> {
+    remove_peer(shared, name, events_tx);
+    Some(())
 }
 
 // ------------------------------------------------------------------ client
@@ -841,5 +902,114 @@ mod tests {
         c1.leave();
         c2.leave();
         host.leave();
+    }
+
+    /// Broadcast хоста подписан его настоящим именем: игроки видят «Мастер», не «host».
+    #[test]
+    fn host_broadcast_carries_real_host_name() {
+        let (ev_tx, _ev_rx) = channel();
+        let host = run_host(0, "Имя", "Мастер Инквизиции", vec![], "c", None, ev_tx).unwrap();
+        let (c_ev, c_rx) = channel();
+        let _c = run_client(&format!("127.0.0.1:{}", host.port), "Elena", vec![], c_ev).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        host.broadcast("chat", serde_json::json!({"text": "начинаем"})).unwrap();
+        let mut got = false;
+        for _ in 0..100 {
+            for ev in drain(&c_rx) {
+                if let LinkEvent::Message(env) = ev {
+                    if env.kind == "chat" && env.from == "Мастер Инквизиции" {
+                        got = true;
+                    }
+                }
+            }
+            if got {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(got, "broadcast must carry the host's real name, not 'host'");
+        host.leave();
+    }
+
+    /// Стол не резиновый: 13-й клиент получает error-кадр, остальные 12 — welcome.
+    #[test]
+    fn table_rejects_clients_over_cap() {
+        let (ev_tx, _ev_rx) = channel();
+        let host = run_host(0, "Full", "Мастер", vec![], "c", None, ev_tx).unwrap();
+        let mut clients = Vec::new();
+        let mut rxs = Vec::new();
+        for i in 0..(MAX_PEERS + 1) {
+            let (e, r) = channel();
+            let c = run_client(&format!("127.0.0.1:{}", host.port), &format!("P{i}"), vec![], e)
+                .unwrap();
+            clients.push(c);
+            rxs.push(r);
+        }
+        let mut errors = 0;
+        let mut welcomes = 0;
+        for _ in 0..250 {
+            for r in &rxs {
+                for ev in drain(r) {
+                    if let LinkEvent::Message(env) = ev {
+                        match env.kind.as_str() {
+                            "error" => errors += 1,
+                            "welcome" => welcomes += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if errors + welcomes > MAX_PEERS {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(errors, 1, "exactly one client over the cap must be rejected");
+        assert_eq!(welcomes, MAX_PEERS, "all clients under the cap must be welcomed");
+        for c in &clients {
+            c.leave();
+        }
+        host.leave();
+    }
+
+    /// Пир, умерший молча (без FIN), вычищается keepalive'ом: канал исходящих
+    /// умирает, ping в него упасть не может — пир снимается со стола.
+    #[test]
+    fn keepalive_removes_silently_dead_peer() {
+        let shared: SharedState = Arc::new(Mutex::new(Shared {
+            players: vec![
+                PlayerInfo { name: "Мастер".into(), actors: vec![], is_host: true },
+                PlayerInfo { name: "Live".into(), actors: vec![], is_host: false },
+                PlayerInfo { name: "Dead".into(), actors: vec![], is_host: false },
+            ],
+            peers: HashMap::new(),
+        }));
+        let (live_tx, live_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (dead_tx, dead_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        drop(dead_rx); // мёртвый пир: писать некому
+        shared.lock().unwrap().peers.insert("Live".into(), live_tx);
+        shared.lock().unwrap().peers.insert("Dead".into(), dead_tx);
+
+        let (tx, rx) = channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        start_keepalive_with(shared.clone(), closed.clone(), tx, Duration::from_millis(30));
+
+        let mut cleaned = false;
+        for _ in 0..150 {
+            for ev in drain(&rx) {
+                if let LinkEvent::Roster(r) = ev {
+                    if r.iter().all(|p| p.name != "Dead") && r.iter().any(|p| p.name == "Live") {
+                        cleaned = true;
+                    }
+                }
+            }
+            if cleaned {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(cleaned, "silently dead peer must be removed from the table");
+        closed.store(true, Ordering::SeqCst);
+        let _still_open = live_rx; // живой пир остаётся подключённым
     }
 }

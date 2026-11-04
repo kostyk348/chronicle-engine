@@ -11,7 +11,12 @@
 
 // ---------------------------------------------------------------- canonical json
 
-/** Канонический JSON: ключи объектов отсортированы рекурсивно, без пробелов. */
+/**
+ * Канонический JSON: ключи объектов отсортированы рекурсивно, без пробелов.
+ * Сортировка — по кодовым точкам Unicode (как байтовая сортировка UTF-8 в Rust):
+ * дефолтный String.sort в JS сравнивает UTF-16-единицы и для астральных
+ * символов (эмодзи) даёт другой порядок — поэтому сравниваем вручную.
+ */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value) ?? 'null';
@@ -20,9 +25,23 @@ export function canonicalJson(value: unknown): string {
     return `[${value.map(canonicalJson).join(',')}]`;
   }
   const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj).sort(codePointCompare);
   const parts = keys.map(k => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`);
   return `{${parts.join(',')}}`;
+}
+
+/** Порядок кодовых точек: совпадает с порядком байтов UTF-8 (Rust keys.sort()). */
+function codePointCompare(a: string, b: string): number {
+  if (a === b) return 0;
+  const ca = Array.from(a);
+  const cb = Array.from(b);
+  const n = Math.min(ca.length, cb.length);
+  for (let i = 0; i < n; i++) {
+    const pa = ca[i].codePointAt(0) ?? 0;
+    const pb = cb[i].codePointAt(0) ?? 0;
+    if (pa !== pb) return pa < pb ? -1 : 1;
+  }
+  return ca.length - cb.length;
 }
 
 // ---------------------------------------------------------------- sha-256

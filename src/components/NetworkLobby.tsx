@@ -62,6 +62,7 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
   const [intentDraft, setIntentDraft] = useState('{"type":"attack","target_id":"mob_shaman"}');
   const [diceSeed, setDiceSeed] = useState('');
   const [pendingIntent, setPendingIntent] = useState<{ commit: string; intent: unknown; seed: string } | null>(null);
+  const [hostAddr, setHostAddr] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const push = useCallback((text: string, tone: LogLine['tone'] = 'info') => {
@@ -71,32 +72,6 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
   useEffect(() => {
     setIsDesktop(typeof window !== 'undefined' && !!(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
   }, []);
-
-  useEffect(() => {
-    let unsub: (() => void) | undefined;
-    let alive = true;
-    onLinkEvent((ev: LinkUiEvent) => {
-      if (!alive) return;
-      switch (ev.kind) {
-        case 'roster':
-          setPlayers(ev.players);
-          break;
-        case 'notice':
-          push(ev.text, 'info');
-          break;
-        case 'closed':
-          push(ev.reason, 'warn');
-          setConnected(false);
-          setRole('');
-          break;
-        case 'message':
-          handleEnvelope(ev.envelope);
-          break;
-      }
-    }).then(fn => { unsub = fn; });
-    return () => { alive = false; unsub?.(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [push, round, entities]);
 
   const handleEnvelope = useCallback((env: { kind: string; from: string; body: unknown }) => {
     if (env.kind === 'welcome') {
@@ -113,8 +88,15 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
       return;
     }
     if (env.kind === 'chat') {
+      // своё эхо не печатаем: doChat уже показал реплику локально
+      if (env.from === myName) return;
       const body = env.body as { text?: string };
       push(`${env.from}: ${body.text ?? ''}`, 'chat');
+      return;
+    }
+    if (env.kind === 'error') {
+      const body = env.body as { text?: string };
+      push(`Хост: ${body.text ?? 'ошибка протокола'}`, 'warn');
       return;
     }
     if (env.kind === 'intent_commit') {
@@ -138,7 +120,36 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
       setRoundState(prev => (prev && prev.round === body.round ? upsertOutcome(prev, { from: env.from, checksum: body.checksum, state: body.state }) : prev));
       push(`📜 ${env.from} прислал канон раунда ${body.round} (${body.checksum.slice(0, 10)}…)`, 'info');
     }
-  }, [push]);
+  }, [push, myName]);
+
+  useEffect(() => {
+    let unsub: (() => void) | undefined;
+    let alive = true;
+    onLinkEvent((ev: LinkUiEvent) => {
+      if (!alive) return;
+      switch (ev.kind) {
+        case 'roster':
+          setPlayers(ev.players);
+          break;
+        case 'notice':
+          push(ev.text, 'info');
+          break;
+        case 'closed':
+          push(ev.reason, 'warn');
+          setConnected(false);
+          setRole('');
+          break;
+        case 'message':
+          handleEnvelope(ev.envelope);
+          break;
+      }
+    }).then(fn => {
+      // если компонент размонтировался раньше ответа — отписываемся сразу,
+      // иначе слушатель навсегда останется в глобальном наборе
+      if (alive) unsub = fn; else fn();
+    });
+    return () => { alive = false; unsub?.(); };
+  }, [handleEnvelope, push]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -156,7 +167,7 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     setBusy(true);
     try {
       const masterCommit = await commitIntent({ table: tableName, round }, `${tableName}#${round}`);
-      const realPort = await linkHost({
+      const info = await linkHost({
         port, table: tableName, playerName: myName,
         actors: entities.filter(e => e.role === 'player').map(e => e.id),
         masterSeedCommit: masterCommit,
@@ -164,8 +175,11 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
       });
       setRole('host');
       setConnected(true);
-      setPort(realPort);
-      push(`Стол «${tableName}» открыт на порту ${realPort}`, 'ok');
+      setPort(info.port);
+      setHostAddr(info.addr);
+      const invite = info.addr ? `${info.addr}:${info.port}` : `127.0.0.1:${info.port}`;
+      push(`Стол «${tableName}» открыт: ${invite}`, 'ok');
+      if (!info.addr) push('Локальный IP не определён — игрокам подойдёт адрес из ipconfig/ifconfig', 'info');
     } catch (e) {
       push(String(e), 'warn');
     } finally {
@@ -194,6 +208,7 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     setPlayers([]);
     setIncomingScroll(null);
     setRoundState(null);
+    setHostAddr(null);
     push('Стол покинут', 'info');
   };
 
@@ -216,6 +231,9 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
       const seed = diceSeed || 'default-seed';
       // Rust считает SHA-256 канона и рассылает intent_commit — хеш возвращается нам
       const commit = await linkIntentCommit(roundState.round, intent, seed);
+      // свой коммит вносим сами: эхо хоста придёт с его именем, чужой клиент своего
+      // конверта обратно не получает — без этого фаза никогда не дойдёт до Reveal
+      setRoundState(prev => (prev && prev.round === roundState.round ? upsertCommit(prev, myName, commit) : prev));
       setPendingIntent({ commit, intent, seed });
       push(`Коммит опубликован: ${commit.slice(0, 12)}…`, 'ok');
     } catch (e) {
@@ -226,6 +244,12 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
   const doReveal = async () => {
     if (!roundState || !pendingIntent) return;
     await linkIntentReveal(roundState.round, pendingIntent.intent, pendingIntent.seed);
+    // своё раскрытие проверяем локально, как чужое — по опубликованному коммиту
+    setRoundState(prev =>
+      prev && prev.round === roundState.round
+        ? upsertReveal(prev, myName, pendingIntent.commit, pendingIntent.intent, pendingIntent.seed, commitIntent)
+        : prev
+    );
     push('Интент раскрыт — все столы могут проверить честность', 'ok');
   };
 
@@ -236,6 +260,8 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
       entities: entities.map(e => ({ id: e.id, hp: e.hp, pos: e.pos, status: e.status })),
     };
     const checksum = await linkRoundResult(roundState.round, state);
+    // свой канон учитываем в машине фаз, как и каноны других столов
+    setRoundState(prev => (prev && prev.round === roundState.round ? upsertOutcome(prev, { from: myName, checksum, state }) : prev));
     push(`Канон разослан, чексумма ${checksum.slice(0, 12)}…`, 'ok');
   };
 
@@ -246,11 +272,14 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
     setChatDraft('');
   };
 
-  const copyPort = async () => {
-    try { await navigator.clipboard.writeText(`${port}`); push('Порт скопирован', 'info'); } catch { /* clipboard недоступен */ }
+  const copyInvite = async () => {
+    const invite = hostAddr ? `${hostAddr}:${port}` : `${port}`;
+    try { await navigator.clipboard.writeText(invite); push(`Скопировано: ${invite}`, 'info'); } catch { /* clipboard недоступен */ }
   };
 
   const cheaters = roundState ? findCheats(roundState) : [];
+  // расхождение канонов: два и более столов прислали разные чексуммы одного раунда
+  const splitBrain = !!roundState && roundState.outcomes.length >= 2 && new Set(roundState.outcomes.map(o => o.checksum)).size > 1;
   const phaseBadge = (phase: string) => {
     const order = ['Commit', 'Reveal', 'Resolved'];
     const idx = order.indexOf(phase);
@@ -316,7 +345,7 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
                 <Field label="Порт">
                   <div className="flex gap-2">
                     <input type="number" className={inputCls} value={port} onChange={e => setPort(Number(e.target.value) || 7788)} />
-                    <button onClick={copyPort} className={ghostBtn} title="Скопировать"><Copy className="w-4 h-4" /></button>
+                    <button onClick={copyInvite} className={ghostBtn} title="Скопировать адрес для игроков"><Copy className="w-4 h-4" /></button>
                   </div>
                 </Field>
                 <label className="flex items-center gap-2 text-sm text-[#a1a1aa]">
@@ -355,7 +384,12 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
                   <h3 className="flex items-center gap-2 text-[#d4af37] font-semibold">
                     <Users className="w-4 h-4" /> За столом {players.length > 0 ? `— ${players.length}` : ''}
                   </h3>
-                  <button onClick={doLeave} className={ghostBtn}><LogOut className="w-4 h-4" /> Покинуть</button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={copyInvite} className={ghostBtn} title="Скопировать адрес стола для игроков">
+                      <Copy className="w-3.5 h-3.5" /> {hostAddr ? `${hostAddr}:${port}` : `порт ${port}`}
+                    </button>
+                    <button onClick={doLeave} className={ghostBtn}><LogOut className="w-4 h-4" /> Покинуть</button>
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {players.map(p => (
@@ -429,6 +463,13 @@ const NetworkLobby: React.FC<NetworkLobbyProps> = ({ round, entities, campaignSc
                     {cheaters.length > 0 && (
                       <p className="flex items-center gap-2 text-sm text-red-400">
                         <AlertTriangle className="w-4 h-4" /> Коммит не совпал с раскрытием: {cheaters.join(', ')} — дайс перекинут!
+                      </p>
+                    )}
+
+                    {splitBrain && (
+                      <p className="flex items-center gap-2 text-sm text-red-400">
+                        <AlertTriangle className="w-4 h-4" /> Столы разошлись: каноны одного раунда не совпали
+                        ({new Set(roundState.outcomes.map(o => o.checksum)).size} версий) — сверьте версии кампании и решите, чей канон верен.
                       </p>
                     )}
 

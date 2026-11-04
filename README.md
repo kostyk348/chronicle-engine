@@ -10,7 +10,7 @@ WEGO-бой с одновременными ходами · криптограф
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/chronicle-engine?sort=semver&color=d4af37&label=%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F)](https://github.com/kostyk348/chronicle-engine/releases)
 [![CI](https://github.com/kostyk348/chronicle-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/chronicle-engine/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/%D1%82%D0%B5%D1%81%D1%82%D1%8B-34%20%D0%BF%D1%80%D0%BE%D1%85%D0%BE%D0%B4%D1%8F%D1%82-22c55e)](#-качество-под-микроскопом)
+[![Tests](https://img.shields.io/badge/%D1%82%D0%B5%D1%81%D1%82%D1%8B-42%20%D0%BF%D1%80%D0%BE%D1%85%D0%BE%D0%B4%D1%8F%D1%82-22c55e)](#-качество-под-микроскопом)
 [![License](https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/%D0%BF%D0%BB%D0%B0%D1%82%D1%84%D0%BE%D1%80%D0%BC%D0%B0-Linux%20%7C%20Windows%20%7C%20macOS-71717a)](https://github.com/kostyk348/chronicle-engine/releases)
 
@@ -144,8 +144,8 @@ npm run dev           # Vite на :5173
 
 | Слой | Проверка | Что покрывает |
 |---|---|---|
-| TypeScript | 26 тестов (Vitest) | WEGO-резолвер: детерминизм, фазы, крит/провал, fallback, щит, dodge/help; протокол Link: канонический JSON, commit-reveal, автомат фаз, античит |
-| Rust | 8 тестов + clippy `-D warnings` | Транспорт: кадры, отказ oversize, релей коммит→раскрытие между двумя клиентами, свиток в welcome, суффиксы дубликатов имён, канонический JSON |
+| TypeScript | 31 тест (Vitest) | WEGO-резолвер: детерминизм, фазы, крит/провал, fallback, щит, dodge/help; протокол Link: канонический JSON, commit-reveal, автомат фаз, античит |
+| Rust | 11 тестов + clippy `-D warnings` | Транспорт: кадры, отказ oversize, релей коммит→раскрытие между двумя клиентами, свиток в welcome, суффиксы дубликатов имён, канонический JSON |
 | CI | GitHub Actions | Два джоба: web (lint → test → build) и rust (cargo test → clippy). Канонический JSON зеркалится тестами с обеих сторон — расхождение канона между TS и Rust невозможно |
 
 Воспроизводимость проверена на уровне свойств: одинаковые интенты + одинаковый сид = идентичный лог и идентичный `statePayload` (тест «детерминизм»), разные сиды = разный раунд.

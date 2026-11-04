@@ -52,12 +52,20 @@ struct LinkHostOpts {
     campaign_eml: Option<String>,
 }
 
+/// Что получает UI после открытия стола: реальный порт и адрес для приглашения.
+#[derive(serde::Serialize)]
+struct HostInfo {
+    port: u16,
+    /// IP хоста в локальной сети, если удалось определить (UDP-трюк без пакетов).
+    addr: Option<String>,
+}
+
 #[tauri::command]
 fn link_host(
     app: AppHandle,
     state: State<Mutex<LinkState>>,
     opts: LinkHostOpts,
-) -> Result<u16, String> {
+) -> Result<HostInfo, String> {
     {
         let st = state.lock().map_err(|_| "poisoned")?;
         if st.session.is_some() {
@@ -75,12 +83,12 @@ fn link_host(
         tx,
     )?;
     forward_events(app, rx);
-    let real_port = handle.port;
+    let info = HostInfo { port: handle.port, addr: handle.local_ip.clone() };
     let mut st = state.lock().map_err(|_| "poisoned")?;
     st.session = Some(LinkSession::Host(handle));
     st.table = opts.table;
     st.role = "host".into();
-    Ok(real_port)
+    Ok(info)
 }
 
 #[tauri::command]

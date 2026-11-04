@@ -31,6 +31,22 @@ describe('canonicalJson', () => {
     expect(canonicalJson(null)).toBe('null');
     expect(canonicalJson([1, 2])).toBe('[1,2]');
   });
+
+  it('астральные ключи сортируются по кодовым точкам, а не по UTF-16', () => {
+    // U+FFFF (65535) < U+1F600 «😀» (128512); дефолтный String.sort в JS
+    // (UTF-16-единицы) поставил бы «😀» (0xD83D…) ПЕРЕД \uFFFF — а Rust
+    // сортирует байты UTF-8, то есть по кодовым точкам. Порядок должен совпасть.
+    // (U+FFFF не эскейпится ни JSON.stringify, ни serde_json — паритет.)
+    expect(canonicalJson({ '\uFFFF': 1, '😀': 2 })).toBe('{"\uFFFF":1,"😀":2}');
+    expect(canonicalJson({ '😀': 2, '\uFFFF': 1 })).toBe('{"\uFFFF":1,"😀":2}');
+    // обычная кириллица после латиницы
+    expect(canonicalJson({ ж: 1, a: 2 })).toBe('{"a":2,"ж":1}');
+  });
+
+  it('вложенные объекты в массивах тоже канонизируются', () => {
+    expect(canonicalJson([{ z: 1, a: [true, null] }, 'ы']))
+      .toBe('[{"a":[true,null],"z":1},"ы"]');
+  });
 });
 
 describe('commit-reveal', () => {
@@ -126,5 +142,39 @@ describe('автомат фаз раунда', () => {
     expect(solo.phase).toBe('Reveal');
     let s = upsertOutcome(solo, { from: 'Мастер', checksum: 'aa', state: {} });
     expect(s.agreedChecksum).toBe('aa');
+  });
+
+  it('фаза не откатывается назад: поздние коммиты не будят закрытый раунд', async () => {
+    let s = fresh();
+    s = upsertCommit(s, 'Elena', 'a'.repeat(64));
+    s = upsertCommit(s, 'Torin', 'b'.repeat(64));
+    s = { ...s, phase: 'Resolved' as const };
+    // коммит после Resolved игнорируется целиком — состояние заморожено
+    expect(upsertCommit(s, 'Elena', 'c'.repeat(64))).toBe(s);
+  });
+
+  it('канон в фазе Commit не учитывается — исходы ждут раскрытий', () => {
+    let s = fresh();
+    s = upsertOutcome(s, { from: 'Elena', checksum: 'aa', state: {} });
+    expect(s.outcomes).toHaveLength(0);
+    expect(s.agreedChecksum).toBeNull();
+  });
+
+  it('из трёх столов двое сошлись, один против — консенсуса нет', async () => {
+    const trio = newRoundState(7, ['Elena', 'Torin', 'Bran']);
+    let s = upsertCommit(trio, 'Elena', 'a'.repeat(64));
+    s = upsertCommit(s, 'Torin', 'b'.repeat(64));
+    s = upsertCommit(s, 'Bran', 'c'.repeat(64));
+    s = { ...s, reveals: s.expectedPlayers.map(p => ({ from: p, commit: '', intent: {}, diceSeed: '', valid: true })), phase: 'Resolved' as const };
+
+    const canonical = { round: 7, log: [] };
+    const good = await roundChecksum(canonical);
+    s = upsertOutcome(s, { from: 'Elena', checksum: good, state: canonical });
+    s = upsertOutcome(s, { from: 'Torin', checksum: good, state: canonical });
+    expect(s.agreedChecksum).toBeNull(); // двое из трёх — ещё не единогласие
+    s = upsertOutcome(s, { from: 'Bran', checksum: 'abad1dea', state: {} });
+    expect(s.agreedChecksum).toBeNull(); // меньшинство ломает канон — split-brain
+    s = upsertOutcome(s, { from: 'Bran', checksum: good, state: canonical });
+    expect(s.agreedChecksum).toBe(good); // переслал верный — единогласно
   });
 });

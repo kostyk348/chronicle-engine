@@ -49,6 +49,12 @@ export async function onLinkEvent(listener: EventListener): Promise<() => void> 
   return () => listeners.delete(listener);
 }
 
+export interface LinkHostInfo {
+  port: number;
+  /** IP хоста в локальной сети, если удалось определить — для приглашения игроков. */
+  addr: string | null;
+}
+
 export async function linkHost(opts: {
   port: number;
   table: string;
@@ -56,9 +62,9 @@ export async function linkHost(opts: {
   actors: string[];
   masterSeedCommit: string;
   campaignEml: string | null;
-}): Promise<number> {
+}): Promise<LinkHostInfo> {
   const { invoke } = await tauri();
-  return invoke<number>('link_host', { opts });
+  return invoke<LinkHostInfo>('link_host', { opts });
 }
 
 export async function linkJoin(opts: {
