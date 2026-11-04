@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Chronicle Engine",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "identifier": "com.chronicle.engine",
   "build": {
     "frontendDist": "../dist",

@@ -132,4 +132,4 @@ MIT — play, hack, publish. [LICENSE](LICENSE)
 <sub>Chronicle Engine — the engine after which every party has a book.</sub>
 </div>
 
-**Gray screen on Linux startup?** Fixed since 1.6.1: the engine sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself (WebKitGTK compositing breaks on NVIDIA and some Mesa builds). For older builds or VMs: prefix the AppImage run with `WEBKIT_DISABLE_DMABUF_RENDERER=1` or `LIBGL_ALWAYS_SOFTWARE=1`.
+**Gray screen on Linux startup?** Fixed since 1.6.1: the engine sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself (WebKitGTK compositing breaks on NVIDIA and some Mesa builds). Since 1.6.5, if the Mesa vendor JSON is missing (typical after an NVIDIA `.run` installer), the app generates its own GLVND vendor JSON pointing at the system `libEGL_mesa.so.0`, so software EGL comes up even on such systems; if Mesa-EGL is absent entirely, the log prints the exact fix: `sudo apt install libegl-mesa0 libgl1-mesa-dri`. For older builds or VMs: prefix the AppImage run with `WEBKIT_DISABLE_DMABUF_RENDERER=1` or `LIBGL_ALWAYS_SOFTWARE=1`.

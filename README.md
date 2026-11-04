@@ -192,7 +192,7 @@ npm run dev           # Vite на :5173
 
 ## ❓ FAQ
 
-**Серый экран при старте на Linux?** Починено с 1.6.3: движок сам ставит `LIBGL_ALWAYS_SOFTWARE=1` (софтверный Mesa-EGL), потому что на системах с битым EGL (NVIDIA + GLVND) WebProcess умирает на старте с `EGL_BAD_PARAMETER` и окно остаётся серым при любых композитинг-флагах. Дополнительно зашиты `WEBKIT_DISABLE_DMABUF_RENDERER=1` и `WEBKIT_DISABLE_COMPOSITING_MODE=1`. С 1.6.4 GLVND принудительно направляется на Mesa-вендора (если установлен), а перед созданием окна печатает вердикт EGL в stderr (`[Chronicle] EGL OK: ...` или причину с готовой командой обхода). Проверить аппаратный путь: `CHRONICLE_FORCE_GPU=1` перед запуском.
+**Серый экран при старте на Linux?** Починено с 1.6.3: движок сам ставит `LIBGL_ALWAYS_SOFTWARE=1` (софтверный Mesa-EGL), потому что на системах с битым EGL (NVIDIA + GLVND) WebProcess умирает на старте с `EGL_BAD_PARAMETER` и окно остаётся серым при любых композитинг-флагах. Дополнительно зашиты `WEBKIT_DISABLE_DMABUF_RENDERER=1` и `WEBKIT_DISABLE_COMPOSITING_MODE=1`. С 1.6.4 GLVND принудительно направляется на Mesa-вендора (если установлен), а перед созданием окна печатает вердикт EGL в stderr (`[Chronicle] EGL OK: ...` или причину с готовой командой обхода). С 1.6.5, если Mesa-json в системе снесён (частый случай после `.run`-установщика NVIDIA), приложение генерирует свой vendor-json на системную `libEGL_mesa.so.0` — софтверный EGL поднимается даже там; а если Mesa-EGL нет вовсе, в лог печатается точное лечение: `sudo apt install libegl-mesa0 libgl1-mesa-dri`. Проверить аппаратный путь: `CHRONICLE_FORCE_GPU=1` перед запуском.
 
 
 **Это замена Roll20 / Foundry?**
